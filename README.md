@@ -122,7 +122,7 @@ GEMINI_API_KEY='AIzaSyDuLhEqJMWWtTseYm7V5KouXJ-605afKxY'
 
 # Directories
 PDF_DIR=./data/books
-DB_DIR=./data/db
+DB_DIR=./data/db_new
 EXPORT_DIR=./data/exports
 WEB_CACHE_DIR=./data/web_cache
 

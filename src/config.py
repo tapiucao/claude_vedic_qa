@@ -11,7 +11,7 @@ load_dotenv()
 # Directory paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PDF_DIR = os.getenv("PDF_DIR", os.path.join(BASE_DIR, "data", "books"))
-DB_DIR = os.getenv("DB_DIR", os.path.join(BASE_DIR, "data", "db"))
+DB_DIR = os.getenv("DB_DIR", os.path.join(BASE_DIR, "data", "db_new"))
 TEMP_DIR = os.getenv("TEMP_DIR", os.path.join(BASE_DIR, "data", "temp"))
 
 # Export directories
@@ -35,7 +35,7 @@ os.makedirs(SUMMARIES_DIR, exist_ok=True)
 os.makedirs(WEB_CACHE_DIR, exist_ok=True)
 
 # LLM Configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro-preview-03-25") 
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.5-pro-latest")  # Updated to known working model
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 
@@ -55,15 +55,15 @@ TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "5"))
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 # Web Scraping Configuration
-SCRAPING_INTERVAL = int(os.getenv("SCRAPING_INTERVAL", "86400"))  # Default to daily
-REQUEST_DELAY = int(os.getenv("REQUEST_DELAY", "5"))  # 5 seconds between requests
+SCRAPING_INTERVAL = "86400"  # Default to daily (24 hours in seconds)
+REQUEST_DELAY = "5"  # 5 seconds between requests
 
 # Trusted websites for scraping
 TRUSTED_WEBSITES = [
     # Add your trusted websites here
     "https://www.purebhakti.com",
     "https://www.vedabase.com",
-    "https://bhakta.org/",
+    "https://www.bhakta.org",
     # Add more as needed
 ]
 

@@ -87,7 +87,7 @@ class VedicKnowledgeAI:
     
     # Modifique a função load_documents no arquivo app.py
     # Modifique a função load_documents no arquivo app.py
-    def load_documents(self, limit: Optional[int] = None, batch_size: int = 100):
+    def load_documents(self, limit: Optional[int] = None, batch_size: int = 500):
         """Load documents into the vector store."""
         logger.info(f"Loading documents from {self.pdf_dir}...")
         

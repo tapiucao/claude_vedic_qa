@@ -24,7 +24,7 @@ RUN chmod -R 777 /app/data
 
 # Environment variables
 ENV PDF_DIR=/app/data/books
-ENV DB_DIR=/app/data/db
+ENV DB_DIR=/app/data/db_new
 ENV PYTHONPATH=/app
 
 # Expose API port
