@@ -1,5 +1,6 @@
 # Core dependencies
 langchain>=0.0.267
+langchain-community
 pypdf>=3.15.1
 chromadb>=0.4.13
 sentence-transformers>=2.2.2
