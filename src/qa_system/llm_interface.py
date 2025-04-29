@@ -10,7 +10,7 @@ from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from langchain.callbacks.manager import CallbackManager
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 
-from ..config import OPENAI_API_KEY, MODEL_NAME, TEMPERATURE, MAX_TOKENS
+from ..config import GEMINI_API_KEY, MODEL_NAME, TEMPERATURE, MAX_TOKENS
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class VedicLLMInterface:
         self.streaming = streaming
         
         # Use provided API key or fall back to environment variable
-        self.api_key = api_key or OPENAI_API_KEY
+        self.api_key = api_key or GEMINI_API_KEY
         if not self.api_key:
             logger.error("OpenAI API key not provided")
             raise ValueError("OpenAI API key is required")

@@ -4,16 +4,15 @@ Handles text embedding generation optimized for Sanskrit and Vedic content.
 """
 import logging
 from typing import List, Dict, Any
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings  # Updated import
 
-from ..config import EMBEDDING_MODEL, OPENAI_API_KEY
+from ..config import EMBEDDING_MODEL
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 def get_huggingface_embeddings(
-    model_name: str = EMBEDDING_MODEL,
+    model_name: str = "sentence-transformers/paraphrase-MiniLM-L6-v2",  # Smaller model
     model_kwargs: Dict[str, Any] = {"device": "cpu"}
 ) -> HuggingFaceEmbeddings:
     """Initialize HuggingFace embeddings model."""
@@ -26,20 +25,6 @@ def get_huggingface_embeddings(
         return embeddings
     except Exception as e:
         logger.error(f"Error initializing HuggingFace embeddings: {str(e)}")
-        raise
-
-def get_openai_embeddings() -> OpenAIEmbeddings:
-    """Initialize OpenAI embeddings."""
-    if not OPENAI_API_KEY:
-        logger.error("OpenAI API key not found")
-        raise ValueError("OPENAI_API_KEY environment variable is required")
-    
-    try:
-        embeddings = OpenAIEmbeddings()
-        logger.info("Initialized OpenAI embeddings")
-        return embeddings
-    except Exception as e:
-        logger.error(f"Error initializing OpenAI embeddings: {str(e)}")
         raise
 
 class VedicEmbeddingSelector:
@@ -65,8 +50,6 @@ class VedicEmbeddingSelector:
         # Initialize the requested model
         if model_type == "huggingface":
             embeddings = get_huggingface_embeddings()
-        elif model_type == "openai":
-            embeddings = get_openai_embeddings()
         else:
             logger.error(f"Unknown embedding model type: {model_type}")
             raise ValueError(f"Unknown embedding model type: {model_type}")

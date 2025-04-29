@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class DynamicVedicScraper(VedicWebScraper):
     """Dynamic scraper for JavaScript-heavy websites using Selenium."""
     
-    def __init__(self, request_delay: int = REQUEST_DELAY):
+    def __init__(self, cache_dir: str, request_delay: int = REQUEST_DELAY):
         """Initialize the dynamic scraper."""
         super().__init__(request_delay=request_delay)
         self.driver = None

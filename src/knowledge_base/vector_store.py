@@ -5,9 +5,9 @@ Handles storing, retrieving, and managing vector embeddings.
 import os
 import logging
 from typing import List, Dict, Any, Optional, Union
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma  # Updated import
 from langchain.docstore.document import Document
-from langchain.embeddings.base import Embeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from ..config import DB_DIR, TOP_K_RESULTS
 
@@ -19,14 +19,20 @@ class VedicVectorStore:
     
     def __init__(
         self,
-        embedding_function: Embeddings,
+        embedding_function: HuggingFaceEmbeddings,
         persist_directory: str = DB_DIR,
-        collection_name: str = "vedic_knowledge"
+        collection_name: str = "vedic_knowledge",
+        chroma_host: Optional[str] = None,
+        chroma_port: Optional[int] = None
     ):
         """Initialize the vector store with an embedding function."""
         self.embedding_function = embedding_function
         self.persist_directory = persist_directory
         self.collection_name = collection_name
+        
+        # Check for external Chroma settings from environment
+        self.chroma_host = chroma_host or os.environ.get("CHROMA_HOST")
+        self.chroma_port = chroma_port or os.environ.get("CHROMA_PORT")
         
         # Create directory if it doesn't exist
         os.makedirs(self.persist_directory, exist_ok=True)
@@ -38,23 +44,42 @@ class VedicVectorStore:
     
     def _initialize_vector_store(self):
         """Initialize the vector store."""
-        # Check if the vector store already exists
-        if os.path.exists(os.path.join(self.persist_directory, "chroma.sqlite3")):
-            # Load existing vector store
-            self.vector_store = Chroma(
-                persist_directory=self.persist_directory,
-                embedding_function=self.embedding_function,
-                collection_name=self.collection_name
-            )
-            logger.info(f"Loaded existing vector store with {self.vector_store._collection.count()} documents")
-        else:
-            # Create a new vector store
-            self.vector_store = Chroma(
-                embedding_function=self.embedding_function,
-                persist_directory=self.persist_directory,
-                collection_name=self.collection_name
-            )
-            logger.info("Created new vector store")
+        try:
+            # Check if using external Chroma server
+            if self.chroma_host and self.chroma_port:
+                # Connect to external Chroma server
+                from chromadb.config import Settings
+                import chromadb
+                
+                client = chromadb.HttpClient(
+                    host=self.chroma_host,
+                    port=self.chroma_port,
+                    settings=Settings(anonymized_telemetry=False)
+                )
+                
+                # Initialize with external client
+                self.vector_store = Chroma(
+                    client=client,
+                    embedding_function=self.embedding_function,
+                    collection_name=self.collection_name
+                )
+                logger.info(f"Connected to external Chroma server at {self.chroma_host}:{self.chroma_port}")
+            else:
+                # Use local persistence
+                self.vector_store = Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embedding_function,
+                    collection_name=self.collection_name
+                )
+                logger.info(f"Using local Chroma at {self.persist_directory}")
+            
+            # Log document count
+            doc_count = self.vector_store._collection.count()
+            logger.info(f"Vector store has {doc_count} documents")
+            
+        except Exception as e:
+            logger.error(f"Error initializing vector store: {e}")
+            raise
     
     def add_documents(self, documents: List[Document]) -> None:
         """Add documents to the vector store."""
@@ -80,6 +105,10 @@ class VedicVectorStore:
     ) -> List[Document]:
         """Search for documents similar to the query."""
         try:
+            # Make sure filter is properly formatted if provided but empty
+            if filter is not None and not filter:
+                filter = None
+                
             results = self.vector_store.similarity_search(
                 query=query,
                 k=k,
@@ -90,6 +119,7 @@ class VedicVectorStore:
         except Exception as e:
             logger.error(f"Error searching vector store: {str(e)}")
             return []
+
     
     def similarity_search_with_score(
         self, 
@@ -170,3 +200,36 @@ class VedicVectorStore:
         """Get documents by source type (pdf or website)."""
         filter_dict = {"type": source_type}
         return self.filter_by_metadata(filter_dict, k)
+    
+    def search(self, query: str, k: int = 5, filter_dict: Optional[Dict[str, Any]] = None) -> List[Document]:
+        """Search for similar documents."""
+        try:
+            logger.debug(f"Searching for '{query}' (k={k}, filter={filter_dict})")
+            # This line passes the filter_dict to the LangChain Chroma wrapper
+            results = self.vector_store.similarity_search(query, k=k, filter=filter_dict)
+            logger.info(f"Found {len(results)} results for query: {query}")
+            return results
+        except Exception as e:
+            logger.error(f"Error during similarity search: {e}")
+            return []
+    
+    def retrieve_documents(
+        self,
+        query: str,
+        filter_dict: Optional[Dict[str, Any]] = None,
+        k: Optional[int] = None
+    ) -> List[Document]:
+        """Retrieve relevant documents for a query."""
+        k = k or self.top_k
+        
+        try:
+            # Make sure filter_dict is properly formatted if provided but empty
+            if filter_dict is not None and not filter_dict:
+                filter_dict = None
+                
+            docs = self.vector_store.similarity_search(query, k=k, filter=filter_dict)
+            logger.info(f"Retrieved {len(docs)} documents for query: {query}")
+            return docs
+        except Exception as e:
+            logger.error(f"Error retrieving documents: {str(e)}")
+            return []

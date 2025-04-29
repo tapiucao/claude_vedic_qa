@@ -28,32 +28,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class SanskritProcessor:
-    """Processor for Sanskrit text with transliteration and normalization capabilities."""
-    
     def __init__(self):
         """Initialize the Sanskrit processor."""
         self.has_indic_nlp = HAS_INDIC_NLP
-        self.has_pyiwn = HAS_PYIWN
+        self.sanskrit_wordnet = None
         
-        # Initialize normalizer if available
-        if self.has_indic_nlp:
-            self.normalizer = indic_normalize.IndicNormalizerFactory().get_normalizer("sa")
-        else:
-            self.normalizer = None
-        
-        # Initialize Sanskrit WordNet if available
-        if self.has_pyiwn:
+        # Try to initialize Sanskrit WordNet but make it optional
+        if HAS_PYIWN:
             try:
-                self.iwn = pyiwn.IndoWordNet(lang='san')
+                # Different initialization approach
+                self.sanskrit_wordnet = pyiwn.IndoWordNet(lang='san')
                 logger.info("Sanskrit WordNet initialized successfully")
+                self.has_pyiwn = True
             except Exception as e:
-                logger.error(f"Error initializing Sanskrit WordNet: {e}")
-                self.iwn = None
+                logger.warning(f"Could not initialize Sanskrit WordNet: {e}. Will proceed without it.")
                 self.has_pyiwn = False
-        else:
-            self.iwn = None
         
-        # Compile regex patterns for Sanskrit detection and processing
+        # Compile regex patterns for Sanskrit detection
         self._compile_patterns()
         
         logger.info("Sanskrit processor initialized")
@@ -61,7 +52,7 @@ class SanskritProcessor:
     def _compile_patterns(self):
         """Compile regex patterns for Sanskrit processing."""
         # Pattern to detect Devanagari script
-        self.devanagari_pattern = re.compile(r'[ऄ-ह़ािीुूृॄेैोौ्ॐंःँॠऱऴक़-य़]')
+        self.devanagari_pattern = re.compile(r'[ऄ-औक-ह\u093Cा-ौ्ंःँॐॠऱऴ]')
         
         # Pattern for IAST transliteration characters
         self.iast_pattern = re.compile(r'[āīūṛṝḷḹēōṃḥṅñṭḍṇśṣ]')
@@ -188,20 +179,29 @@ class SanskritProcessor:
         return list(set(terms))
     
     def get_term_definition(self, term: str) -> Optional[str]:
-        """Get definition for a Sanskrit term using WordNet if available."""
-        if not self.has_pyiwn or not self.iwn:
-            return None
+        """Get definition for a Sanskrit term."""
+        # Try WordNet first if available
+        if self.has_pyiwn and self.sanskrit_wordnet:
+            try:
+                synsets = self.sanskrit_wordnet.synsets(term)
+                if synsets:
+                    return synsets[0].definition()
+            except Exception as e:
+                logger.debug(f"Error getting definition from WordNet: {e}")
         
-        try:
-            # Try to find synsets for the term
-            synsets = self.iwn.synsets(term)
-            if synsets:
-                # Return the first definition
-                return synsets[0].definition()
-            return None
-        except Exception as e:
-            logger.error(f"Error getting definition for term '{term}': {e}")
-            return None
+        # Fallback: Look for common known terms
+        common_definitions = {
+            "dharma": "Righteous duty, virtue, or the natural law",
+            "karma": "Action or deed and its consequences",
+            "yoga": "Union or yoking with the divine, spiritual discipline",
+            "atman": "Soul or the true self",
+            "brahman": "The ultimate reality or universal consciousness",
+            # Add more common terms
+        }
+        
+        # Case-insensitive lookup
+        term_lower = term.lower()
+        return common_definitions.get(term_lower)
     
     def process_document(self, text: str) -> Dict[str, Any]:
         """Process a document with Sanskrit content."""
@@ -220,3 +220,5 @@ class SanskritProcessor:
                     result["term_definitions"][term] = definition
         
         return result
+    
+    z
