@@ -1,13 +1,13 @@
 (env) PS C:\Users\tarcisio.piucco\OneDrive - ROX PARTNER\Área de Trabalho\claude_vedic_qa> python app.py load --limit 3
 C:\Users\tarcisio.piucco\OneDrive - ROX PARTNER\Área de Trabalho\claude_vedic_qa\src\knowledge_base\vector_store.py:8: LangChainDeprecationWarning: Importing Chroma from langchain.vectorstores is deprecated. Please replace deprecated imports:
 
->> from langchain.vectorstores import Chroma
+>> from langchain_community.vectorstores import Chroma
 
 with new imports of:
 
 >> from langchain_community.vectorstores import Chroma
 You can use the langchain cli to **automatically** upgrade many imports. Please see documentation here <https://python.langchain.com/docs/versions/v0_2/>
-  from langchain.vectorstores import Chroma
+  from langchain_community.vectorstores import Chroma
 C:\Users\tarcisio.piucco\OneDrive - ROX PARTNER\Área de Trabalho\claude_vedic_qa\env\Lib\site-packages\langchain\chat_models\__init__.py:33: LangChainDeprecationWarning: Importing chat models from langchain is deprecated. Importing from langchain will no longer be supported as of langchain==0.2.0. Please import from langchain-community instead:
 
 `from langchain_community.chat_models import ChatOpenAI`.
@@ -340,13 +340,13 @@ Loaded documents from ./data/books
 (env) PS C:\Users\tarcisio.piucco\OneDrive - ROX PARTNER\Área de Trabalho\claude_vedic_qa> python app.py answer "What is the meaning of citta?"                  
 C:\Users\tarcisio.piucco\OneDrive - ROX PARTNER\Área de Trabalho\claude_vedic_qa\src\knowledge_base\vector_store.py:8: LangChainDeprecationWarning: Importing Chroma from langchain.vectorstores is deprecated. Please replace deprecated imports:
 
->> from langchain.vectorstores import Chroma
+>> from langchain_community.vectorstores import Chroma
 
 with new imports of:
 
 >> from langchain_community.vectorstores import Chroma
 You can use the langchain cli to **automatically** upgrade many imports. Please see documentation here <https://python.langchain.com/docs/versions/v0_2/>
-  from langchain.vectorstores import Chroma
+  from langchain_community.vectorstores import Chroma
 C:\Users\tarcisio.piucco\OneDrive - ROX PARTNER\Área de Trabalho\claude_vedic_qa\env\Lib\site-packages\langchain\chat_models\__init__.py:33: LangChainDeprecationWarning: Importing chat models from langchain is deprecated. Importing from langchain will no longer be supported as of langchain==0.2.0. Please import from langchain-community instead:
 
 `from langchain_community.chat_models import ChatOpenAI`.

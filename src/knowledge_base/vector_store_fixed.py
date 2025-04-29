@@ -1,176 +1,126 @@
-"""
-Vector database operations for Vedic Knowledge AI.
-Handles storing, retrieving, and managing vector embeddings.
-"""
+# src/knowledge_base/vector_store.py
 import os
 import logging
-from typing import List, Dict, Any, Optional, Union
-from langchain_chroma import Chroma  # Updated import from langchain_chroma
-from langchain.docstore.document import Document
-from langchain.embeddings.base import Embeddings
+from typing import List, Dict, Any, Optional
+from langchain_community.vectorstores import Chroma
+import chromadb # Import the chromadb client library
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 
-from ..config import DB_DIR, TOP_K_RESULTS
+from src.config import DB_DIR, CHROMA_COLLECTION_NAME # Keep DB_DIR for potential local backups/metadata? Or remove if unused.
+from src.utils.logger import setup_logger
 
-# Configure logging
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__, "vector_store.log")
+
+# Get Chroma server details from environment variables (set in docker-compose)
+CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost") # Default to localhost if not running in Docker
+CHROMA_PORT = os.getenv("CHROMA_PORT", "8001")      # Default port
 
 class VedicVectorStore:
-    """Vector store manager for Vedic textual knowledge."""
-    
-    def __init__(
-        self,
-        embedding_function: Embeddings,
-        persist_directory: str = DB_DIR,
-        collection_name: str = "vedic_knowledge"
-    ):
-        """Initialize the vector store with an embedding function."""
+    """Handles interactions with the Chroma vector store."""
+
+    def __init__(self, embedding_function: Embeddings, collection_name: str = CHROMA_COLLECTION_NAME):
+        """Initialize the vector store client."""
         self.embedding_function = embedding_function
-        self.persist_directory = persist_directory
         self.collection_name = collection_name
-        
-        # Create directory if it doesn't exist
-        os.makedirs(self.persist_directory, exist_ok=True)
-        
-        # Initialize the vector store
-        self._initialize_vector_store()
-        
-        logger.info(f"Initialized vector store at {self.persist_directory}")
-    
-    def _initialize_vector_store(self):
-        """Initialize the vector store."""
+
         try:
-            # Create a new vector store (always fresh)
+            logger.info(f"Connecting to ChromaDB server at {CHROMA_HOST}:{CHROMA_PORT}")
+            # Initialize the ChromaDB HTTP client
+            self.client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+
+            # Initialize LangChain Chroma integration with the client and embedding function
             self.vector_store = Chroma(
+                client=self.client,
+                collection_name=self.collection_name,
                 embedding_function=self.embedding_function,
-                persist_directory=self.persist_directory,
-                collection_name=self.collection_name
+                # Persistence is handled by the Chroma server now, remove persist_directory
             )
-            logger.info(f"Initialized vector store at {self.persist_directory}")
+            # Check connection by trying to get the collection (raises exception if unavailable)
+            self.client.get_collection(self.collection_name) # Creates if not exists by default with get_or_create
+            count = self.vector_store._collection.count()
+            logger.info(f"Connected to vector store. Collection '{self.collection_name}' has {count} documents.")
+
         except Exception as e:
-            logger.error(f"Error initializing vector store: {str(e)}")
-            # Try to recover by creating a new collection with a different name
-            try:
-                logger.info("Trying to recover with a new collection name...")
-                self.collection_name = f"{self.collection_name}_new"
-                self.vector_store = Chroma(
-                    embedding_function=self.embedding_function,
-                    persist_directory=self.persist_directory,
-                    collection_name=self.collection_name
-                )
-                logger.info(f"Recovered with new collection: {self.collection_name}")
-            except Exception as e2:
-                logger.error(f"Recovery failed: {str(e2)}")
-                raise
-    
-    def add_documents(self, documents: List[Document]) -> None:
+            logger.error(f"Failed to connect or initialize ChromaDB client at {CHROMA_HOST}:{CHROMA_PORT}: {e}")
+            # Handle specific connection errors if possible
+            raise ConnectionError(f"Could not connect to ChromaDB server at {CHROMA_HOST}:{CHROMA_PORT}") from e
+
+    def add_documents(self, documents: List[Document]):
         """Add documents to the vector store."""
         if not documents:
-            logger.warning("No documents provided to add to vector store")
+            logger.warning("No documents provided to add.")
             return
-        
+
         try:
-            # Add documents to the vector store
-            self.vector_store.add_documents(documents)
-            # Persist the changes
-            self.vector_store.persist()
-            logger.info(f"Added {len(documents)} documents to vector store")
+            logger.info(f"Adding {len(documents)} documents to collection '{self.collection_name}'...")
+            # Use LangChain's add_documents method
+            ids = self.vector_store.add_documents(documents)
+            logger.info(f"Successfully added {len(ids)} documents to vector store.")
+            # No need to call self.vector_store.persist() anymore
         except Exception as e:
-            logger.error(f"Error adding documents to vector store: {str(e)}")
-            raise
-    
-    def similarity_search(
-        self, 
-        query: str, 
-        k: int = TOP_K_RESULTS,
-        filter: Optional[Dict[str, Any]] = None
-    ) -> List[Document]:
-        """Search for documents similar to the query."""
+            logger.error(f"Error adding documents to ChromaDB: {e}")
+            # Consider adding retry logic here if needed
+
+    def search(self, query: str, k: int = 5, filter_dict: Optional[Dict[str, Any]] = None) -> List[Document]:
+        """Search for similar documents."""
         try:
-            results = self.vector_store.similarity_search(
-                query=query,
-                k=k,
-                filter=filter
-            )
+            logger.debug(f"Searching for '{query}' (k={k}, filter={filter_dict})")
+            results = self.vector_store.similarity_search(query, k=k, filter=filter_dict)
             logger.info(f"Found {len(results)} results for query: {query}")
             return results
         except Exception as e:
-            logger.error(f"Error searching vector store: {str(e)}")
+            logger.error(f"Error during similarity search: {e}")
             return []
-    
-    def similarity_search_with_score(
-        self, 
-        query: str, 
-        k: int = TOP_K_RESULTS,
-        filter: Optional[Dict[str, Any]] = None
-    ) -> List[tuple[Document, float]]:
-        """Search for documents with similarity scores."""
-        try:
-            results = self.vector_store.similarity_search_with_score(
-                query=query,
-                k=k,
-                filter=filter
-            )
-            logger.info(f"Found {len(results)} scored results for query: {query}")
-            return results
-        except Exception as e:
-            logger.error(f"Error searching vector store with scores: {str(e)}")
-            return []
-    
-    def get_retriever(self, search_kwargs: Optional[Dict[str, Any]] = None):
-        """Get a retriever interface to the vector store."""
-        if search_kwargs is None:
-            search_kwargs = {"k": TOP_K_RESULTS}
-        
-        return self.vector_store.as_retriever(search_kwargs=search_kwargs)
-    
-    def delete_collection(self) -> None:
-        """Delete the entire collection."""
-        try:
-            self.vector_store.delete_collection()
-            logger.info(f"Deleted collection {self.collection_name}")
-            # Reinitialize an empty vector store
-            self._initialize_vector_store()
-        except Exception as e:
-            logger.error(f"Error deleting collection: {str(e)}")
-            raise
-    
+
+    def get_retriever(self, k: int = 5, filter_dict: Optional[Dict[str, Any]] = None):
+         """Get a LangChain retriever instance."""
+         search_kwargs = {'k': k}
+         if filter_dict:
+             search_kwargs['filter'] = filter_dict
+         return self.vector_store.as_retriever(search_kwargs=search_kwargs)
+
+
+    def filter_by_metadata(self, filter_dict: Dict[str, Any], k: int = 100) -> List[Document]:
+         """Filter documents by metadata (Note: Chroma filtering capabilities might vary)."""
+         logger.warning("Metadata filtering effectiveness depends on Chroma version and implementation.")
+         # This basic search might not be the most efficient way to filter large datasets in Chroma.
+         # Consider using Chroma's direct query capabilities if complex filtering is needed.
+         try:
+             # Use similarity search with a dummy query and filter - less efficient
+             # results = self.vector_store.similarity_search(" ", k=k, filter=filter_dict)
+
+             # Better approach (if LangChain interface supports it well or use client directly):
+             # Use the retriever with the filter
+             retriever = self.get_retriever(k=k, filter_dict=filter_dict)
+             results = retriever.get_relevant_documents(" ") # Use a neutral query string
+
+             logger.info(f"Found {len(results)} documents matching filter: {filter_dict}")
+             return results
+         except Exception as e:
+             logger.error(f"Error filtering by metadata: {e}")
+             return []
+
     def get_statistics(self) -> Dict[str, Any]:
-        """Get statistics about the vector store."""
+        """Get statistics about the vector store collection."""
         try:
-            # Try to get the count of documents
-            try:
-                doc_count = self.vector_store._collection.count()
-            except:
-                doc_count = 0
-            
-            # Get metadata about the collection
-            stats = {
-                "document_count": doc_count,
+            count = self.vector_store._collection.count()
+            metadata = self.vector_store._collection.metadata # Might be None
+            return {
+                "document_count": count,
                 "collection_name": self.collection_name,
-                "persist_directory": self.persist_directory
+                "connection_host": CHROMA_HOST,
+                "connection_port": CHROMA_PORT,
+                "collection_metadata": metadata
             }
-            
-            return stats
         except Exception as e:
-            logger.error(f"Error getting vector store statistics: {str(e)}")
-            return {"error": str(e)}
-    
-    def filter_by_metadata(
-        self, 
-        filter_dict: Dict[str, Any],
-        k: int = TOP_K_RESULTS
-    ) -> List[Document]:
-        """Get documents that match metadata filters."""
-        try:
-            results = self.vector_store.get(
-                where=filter_dict,
-                k=k
-            )
-            logger.info(f"Found {len(results)} documents matching filter: {filter_dict}")
-            return results
-        except Exception as e:
-            logger.error(f"Error filtering by metadata: {str(e)}")
-            return []
+            logger.error(f"Error getting statistics: {e}")
+            return {
+                "error": str(e),
+                "collection_name": self.collection_name,
+                "connection_host": CHROMA_HOST,
+                 "connection_port": CHROMA_PORT,
+            }
     
     def filter_by_source_type(
         self, 

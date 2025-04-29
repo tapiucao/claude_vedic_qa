@@ -1,4 +1,4 @@
-version: '3.8'
+version: '3.11'
 
 services:
   vedic-knowledge-ai:
@@ -6,15 +6,46 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8000:8000" # API port
     volumes:
       - ./data:/app/data
+      - .:/app # Mount current directory for code changes if needed during dev
     env_file:
       - .env
+    # Make sure the API waits for Chroma server to be healthy
+    depends_on:
+      chroma:
+        condition: service_healthy
     restart: unless-stopped
+    environment:
+      # Pass Chroma host/port to the application container
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8001 # Internal port for Chroma server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 40s
+      retries: 5 # Increased retries
+      start_period: 60s # Increased start period
+
+  chroma:
+    image: chromadb/chroma:latest # Use the official ChromaDB image
+    ports:
+      - "8001:8001" # Expose Chroma server port (adjust if 8001 conflicts)
+    volumes:
+      # Persist Chroma data outside the container in a named volume
+      - chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE # Enable persistence within the Chroma container volume
+      - ANONYMIZED_TELEMETRY=FALSE # Optional: disable telemetry
+    # Add healthcheck for Chroma server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/heartbeat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  chroma_data: # Define the named volume for Chroma persistence

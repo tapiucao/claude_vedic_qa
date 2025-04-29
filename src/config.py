@@ -35,7 +35,7 @@ os.makedirs(SUMMARIES_DIR, exist_ok=True)
 os.makedirs(WEB_CACHE_DIR, exist_ok=True)
 
 # LLM Configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.5-pro-latest")  # Updated to known working model
+MODEL_NAME = "gemini-2.0-flash"#"gemini-2.5-pro-preview-03-25" 
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 

@@ -419,6 +419,124 @@ class VedicKnowledgeAI:
         vector_stats = self.vector_store.get_statistics()
         
         return vector_stats
+    # Add the following code to app.py
+
+# First, add a new method to the VedicKnowledgeAI class
+def list_chapters(self, text_id: str = None):
+    """List available chapters or specific text chapters."""
+    logger.info(f"Listing chapters for text: {text_id or 'all'}")
+    
+    # Get all documents
+    docs = self.vector_store.get_all_documents()
+    
+    # Filter by text if specified
+    if text_id:
+        docs = [doc for doc in docs if doc.metadata.get("text_id") == text_id]
+    
+    # Group documents by text_id
+    texts = {}
+    for doc in docs:
+        text_id = doc.metadata.get("text_id") or doc.metadata.get("source", "Unknown")
+        title = doc.metadata.get("title") or os.path.basename(text_id)
+        chapter = doc.metadata.get("chapter")
+        
+        if not chapter:
+            continue
+            
+        if text_id not in texts:
+            texts[text_id] = {
+                "title": title,
+                "chapters": set()
+            }
+        
+        texts[text_id]["chapters"].add(chapter)
+    
+    # Format results
+    result = {}
+    for text_id, info in texts.items():
+        chapters = sorted(list(info["chapters"]))
+        result[text_id] = {
+            "title": info["title"],
+            "chapters": chapters,
+            "chapter_count": len(chapters)
+        }
+    
+    return result
+
+def get_chapter_content(self, text_id: str, chapter: str):
+    """Get content for a specific chapter."""
+    logger.info(f"Getting content for text: {text_id}, chapter: {chapter}")
+    
+    # Query for documents matching text_id and chapter
+    filter_dict = {
+        "text_id": text_id,
+        "chapter": chapter
+    }
+    
+    docs = self.vector_store.filter_by_metadata(filter_dict)
+    
+    if not docs:
+        return {
+            "success": False,
+            "message": f"No content found for text: {text_id}, chapter: {chapter}",
+            "documents": []
+        }
+    
+    # Sort documents by page or verse number if available
+    sorted_docs = sorted(docs, key=lambda x: x.metadata.get("page", 0))
+    
+    # Get text information
+    title = sorted_docs[0].metadata.get("title") or os.path.basename(text_id)
+    
+    return {
+        "success": True,
+        "text_id": text_id,
+        "title": title,
+        "chapter": chapter,
+        "document_count": len(sorted_docs),
+        "documents": sorted_docs
+    }
+
+def check_system_health(self) -> Dict[str, Any]:
+    """Check the health of all system components."""
+    health = {
+        "overall": "healthy",
+        "components": {
+            "vector_store": "healthy",
+            "llm_interface": "healthy",
+            "web_scraper": "healthy",
+            "cache": "healthy"
+        },
+        "details": {}
+    }
+    
+    # Check vector store
+    try:
+        doc_count = self.vector_store.get_statistics().get("document_count", 0)
+        health["details"]["vector_store"] = f"OK - {doc_count} documents"
+    except Exception as e:
+        health["components"]["vector_store"] = "unhealthy"
+        health["details"]["vector_store"] = str(e)
+        health["overall"] = "degraded"
+    
+    # Check LLM interface
+    try:
+        # Simple test query
+        test_result = self.llm_interface.generate_response("test", "")
+        if test_result and not test_result.startswith("Error"):
+            health["details"]["llm_interface"] = "OK"
+        else:
+            health["components"]["llm_interface"] = "degraded"
+            health["details"]["llm_interface"] = "Response validation failed"
+            health["overall"] = "degraded"
+    except Exception as e:
+        health["components"]["llm_interface"] = "unhealthy"
+        health["details"]["llm_interface"] = str(e)
+        health["overall"] = "degraded"
+    
+    # Add checks for other components...
+    
+    return health
 
 
 def main():
@@ -800,8 +918,188 @@ def main():
                     print(f"Collection name: {info['collection_name']}")
                     print(f"Directory: {info['persist_directory']}")
                 
+
+                elif args.command == "chapters":
+                    chapters = ai.list_chapters(args.text)
+                    
+                    if not chapters:
+                        print("No chapters found")
+                    else:
+                        print("\n" + "="*50)
+                        print("Available Texts and Chapters:")
+                        print("="*50)
+                        
+                        for text_id, info in chapters.items():
+                            print(f"\nText: {info['title']} ({text_id})")
+                            print(f"Number of chapters: {info['chapter_count']}")
+                            print("\nChapters:")
+                            for chapter in info['chapters']:
+                                print(f"  - {chapter}")
+                            print("-"*50)
+                        
+                        if args.export:
+                            export_path = DataExporter.export_statistics(
+                                {"texts_and_chapters": chapters},
+                                name="texts_and_chapters"
+                            )
+                            print(f"\nExported chapters list to {export_path}")
+
+                elif args.command == "chapter":
+                    result = ai.get_chapter_content(args.text_id, args.chapter)
+                    
+                    if not result["success"]:
+                        print(result["message"])
+                    else:
+                        print("\n" + "="*50)
+                        print(f"Text: {result['title']} ({result['text_id']})")
+                        print(f"Chapter: {result['chapter']}")
+                        print(f"Number of documents: {result['document_count']}")
+                        print("="*50 + "\n")
+                        
+                        for i, doc in enumerate(result["documents"]):
+                            print(f"Document {i+1}:")
+                            print("-"*30)
+                            print(doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content)
+                            print("-"*30 + "\n")
+                        
+                        if args.export:
+                            # Prepare data for export
+                            chapter_data = {
+                                "text_id": result["text_id"],
+                                "title": result["title"],
+                                "chapter": result["chapter"],
+                                "document_count": result["document_count"],
+                                "content": "\n\n".join([doc.page_content for doc in result["documents"]])
+                            }
+                            
+                            # Export as a text summary
+                            export_path = DataExporter.export_text_summary(
+                                text_id=f"{result['text_id']}_{result['chapter']}",
+                                summary=chapter_data["content"],
+                                metadata={
+                                    "title": f"{result['title']} - Chapter {result['chapter']}",
+                                    "source": result["text_id"],
+                                    "chapter": result["chapter"]
+                                }
+                            )
+                            print(f"\nExported chapter content to {export_path}")
+
+                # Also, add interactive mode commands
+                # In the interactive mode section, add:
+
+                elif user_input.lower() == "chapters":
+                    chapters = ai.list_chapters()
+                    
+                    if not chapters:
+                        print("No chapters found")
+                    else:
+                        print("\nAvailable Texts and Chapters:")
+                        
+                        for text_id, info in chapters.items():
+                            print(f"\nText: {info['title']} ({text_id})")
+                            print(f"Number of chapters: {info['chapter_count']}")
+                            print("\nChapters:")
+                            for chapter in info['chapters']:
+                                print(f"  - {chapter}")
+                            print("-"*30)
+
+                elif user_input.lower().startswith("chapters "):
+                    text_id = user_input[9:].strip()
+                    chapters = ai.list_chapters(text_id)
+                    
+                    if not chapters:
+                        print(f"No chapters found for text: {text_id}")
+                    else:
+                        for text_id, info in chapters.items():
+                            print(f"\nText: {info['title']} ({text_id})")
+                            print(f"Number of chapters: {info['chapter_count']}")
+                            print("\nChapters:")
+                            for chapter in info['chapters']:
+                                print(f"  - {chapter}")
+
+                elif user_input.lower().startswith("chapter "):
+                    args = user_input[8:].strip().split()
+                    if len(args) < 2:
+                        print("Please provide text_id and chapter. Example: chapter bhagavad-gita 1")
+                    else:
+                        text_id = args[0]
+                        chapter = args[1]
+                        
+                        result = ai.get_chapter_content(text_id, chapter)
+                        
+                        if not result["success"]:
+                            print(result["message"])
+                        else:
+                            print(f"\nText: {result['title']} ({result['text_id']})")
+                            print(f"Chapter: {result['chapter']}")
+                            print(f"Number of documents: {result['document_count']}")
+                            print("-"*30)
+                            
+                            # Show first document as a preview
+                            if result["documents"]:
+                                doc = result["documents"][0]
+                                preview = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
+                                print(f"Preview:\n{preview}")
+                                print(f"\nUse 'export chapter {text_id} {chapter}' to export full content")
+
+                elif user_input.lower().startswith("export chapter "):
+                    args = user_input[14:].strip().split()
+                    if len(args) < 2:
+                        print("Please provide text_id and chapter. Example: export chapter bhagavad-gita 1")
+                    else:
+                        text_id = args[0]
+                        chapter = args[1]
+                        
+                        result = ai.get_chapter_content(text_id, chapter)
+                        
+                        if not result["success"]:
+                            print(result["message"])
+                        else:
+                            # Prepare data for export
+                            chapter_data = {
+                                "text_id": result["text_id"],
+                                "title": result["title"],
+                                "chapter": result["chapter"],
+                                "document_count": result["document_count"],
+                                "content": "\n\n".join([doc.page_content for doc in result["documents"]])
+                            }
+                            
+                            # Export as a text summary
+                            export_path = DataExporter.export_text_summary(
+                                text_id=f"{result['text_id']}_{result['chapter']}",
+                                summary=chapter_data["content"],
+                                metadata={
+                                    "title": f"{result['title']} - Chapter {result['chapter']}",
+                                    "source": result["text_id"],
+                                    "chapter": result["chapter"]
+                                }
+                            )
+                            print(f"\nExported chapter content to {export_path}")
+
+                # Update the help text in interactive mode
+                elif user_input.lower() in ["help", "h", "?"]:
+                    print("\nAvailable commands:")
+                    print("  ask <question>         - Ask a question")
+                    print("  term <sanskrit term>   - Explain a Sanskrit term")
+                    print("  verse <verse text>     - Explain a verse")
+                    print("  lookup <term>          - Look up a Sanskrit term on Vedabase")
+                    print("  scrape <url>           - Scrape a website")
+                    print("  dynamic <url>          - Scrape a JS-heavy website")
+                    print("  cache stats            - Show cache statistics")
+                    print("  cache clear            - Clear expired cache entries")
+                    print("  export terms           - Export Sanskrit terms dictionary")
+                    print("  export report          - Generate system report")
+                    print("  chapters               - List all available texts and chapters")
+                    print("  chapters <text_id>     - List chapters for a specific text")
+                    print("  chapter <text_id> <ch> - Show content preview for a specific chapter")
+                    print("  export chapter <t> <c> - Export chapter content to a file")
+                    print("  info                   - Show database information")
+                    print("  exit                   - Exit interactive mode")
+                    print()
                 else:
                     print("Unknown command. Type 'help' for a list of commands")
+                
+
             
             except KeyboardInterrupt:
                 break
