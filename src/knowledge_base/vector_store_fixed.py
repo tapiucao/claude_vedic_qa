@@ -2,7 +2,7 @@
 import os
 import logging
 from typing import List, Dict, Any, Optional
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 import chromadb # Import the chromadb client library
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings

@@ -89,7 +89,7 @@ class VedicLLMInterface:
             messages.append(HumanMessage(content=message_content))
             
             # Generate response
-            response = self.llm.predict_messages(messages)
+            response = self.llm.invoke(messages)
             
             # Extract content from response
             if hasattr(response, 'content'):

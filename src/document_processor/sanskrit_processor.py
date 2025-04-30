@@ -31,15 +31,33 @@ class SanskritProcessor:
     def __init__(self):
         """Initialize the Sanskrit processor."""
         self.has_indic_nlp = HAS_INDIC_NLP
+        self.has_pyiwn = HAS_PYIWN
         self.sanskrit_wordnet = None
         
-        # Try to initialize Sanskrit WordNet but make it optional
-        if HAS_PYIWN:
+        # Initialize Sanskrit WordNet if available
+        if self.has_pyiwn:
             try:
-                # Different initialization approach
-                self.sanskrit_wordnet = pyiwn.IndoWordNet(lang='san')
-                logger.info("Sanskrit WordNet initialized successfully")
-                self.has_pyiwn = True
+                # The issue is likely here - change how you're initializing the WordNet
+                # Instead of using 'value' attribute on a string, use the proper enum value
+                import pyiwn
+                # Try different initialization methods
+                try:
+                    # Method 1: Using the language code directly
+                    self.sanskrit_wordnet = pyiwn.IndoWordNet(lang='san')
+                    logger.info("Sanskrit WordNet initialized using language code 'san'")
+                except Exception as inner_e:
+                    try:
+                        # Method 2: Using Language enum if available
+                        if hasattr(pyiwn, 'Language') and hasattr(pyiwn.Language, 'SANSKRIT'):
+                            self.sanskrit_wordnet = pyiwn.IndoWordNet(lang=pyiwn.Language.SANSKRIT)
+                            logger.info("Sanskrit WordNet initialized using Language.SANSKRIT enum")
+                        else:
+                            # Method 3: Try a different language code
+                            self.sanskrit_wordnet = pyiwn.IndoWordNet(lang='skt')
+                            logger.info("Sanskrit WordNet initialized using language code 'skt'")
+                    except Exception as inner_inner_e:
+                        logger.warning(f"All initialization methods failed for Sanskrit WordNet")
+                        raise inner_inner_e
             except Exception as e:
                 logger.warning(f"Could not initialize Sanskrit WordNet: {e}. Will proceed without it.")
                 self.has_pyiwn = False
@@ -220,5 +238,3 @@ class SanskritProcessor:
                     result["term_definitions"][term] = definition
         
         return result
-    
-    z
