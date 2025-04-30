@@ -5,8 +5,7 @@ Handles finding relevant documents and context for queries.
 import logging
 import re
 from typing import List, Dict, Any, Optional, Tuple, Union
-from langchain.docstore.document import Document
-
+from langchain_core.documents import Document
 from ..knowledge_base.vector_store import VedicVectorStore
 from ..knowledge_base.prompt_templates import select_prompt_template
 from ..qa_system.gemini_interface import GeminiLLMInterface
@@ -401,12 +400,12 @@ class VedicRetriever:
                             topics.add(first_sentence.strip().capitalize())
             
             # Add topics to summary
-            for i, topic in enumerate(list(topics)[:5]):  # Limit to 5 topics
+            for i, topic in enumerate(list(topics)[:10]):  # Limit to 5 topics
                 summary += f"\n• {topic}"
         
         # Extract source information
         sources = []
-        for doc in docs[:5]:  # Limit to first 5 documents
+        for doc in docs[:10]:  # Limit to first 5 documents
             source = {
                 "source": doc.metadata.get("source", "Unknown"),
                 "page": doc.metadata.get("page", ""),
@@ -418,7 +417,7 @@ class VedicRetriever:
         result = {
             "summary": summary,
             "sources": sources,
-            "documents": docs[:5]  # Limit to first 5 documents
+            "documents": docs[:10]  # Limit to first 5 documents
         }
         
         return result

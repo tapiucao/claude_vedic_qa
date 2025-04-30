@@ -5,8 +5,8 @@ Handles storing, retrieving, and managing vector embeddings.
 import os
 import logging
 from typing import List, Dict, Any, Optional, Union
-from langchain_community.vectorstores import Chroma  # Updated import
-from langchain.docstore.document import Document
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from ..config import DB_DIR, TOP_K_RESULTS
@@ -201,7 +201,7 @@ class VedicVectorStore:
         filter_dict = {"type": source_type}
         return self.filter_by_metadata(filter_dict, k)
     
-    def search(self, query: str, k: int = 5, filter_dict: Optional[Dict[str, Any]] = None) -> List[Document]:
+    def search(self, query: str, k: int = 10, filter_dict: Optional[Dict[str, Any]] = None) -> List[Document]:
         """Search for similar documents."""
         try:
             logger.debug(f"Searching for '{query}' (k={k}, filter={filter_dict})")
