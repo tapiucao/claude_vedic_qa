@@ -1,8 +1,10 @@
+# src/config.py
 """
 Configuration settings for the Vedic Knowledge AI system.
 Loads environment variables and provides configuration for different components.
 """
 import os
+import warnings # Import warnings
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -22,7 +24,8 @@ SUMMARIES_DIR = os.path.join(EXPORT_DIR, "summaries")
 
 # Web cache directory
 WEB_CACHE_DIR = os.getenv("WEB_CACHE_DIR", os.path.join(BASE_DIR, "data", "web_cache"))
-CACHE_EXPIRY = int(os.getenv("CACHE_EXPIRY", "604800"))  # 7 days in seconds
+# Default: 7 days in seconds
+CACHE_EXPIRY = int(os.getenv("CACHE_EXPIRY", "604800"))
 
 # Ensure directories exist
 os.makedirs(PDF_DIR, exist_ok=True)
@@ -35,16 +38,24 @@ os.makedirs(SUMMARIES_DIR, exist_ok=True)
 os.makedirs(WEB_CACHE_DIR, exist_ok=True)
 
 # LLM Configuration
-MODEL_NAME = "gemini-2.0-flash"#"gemini-2.5-pro-preview-03-25" 
+# Example: "gemini-1.5-flash", "gemini-1.5-pro" - Ensure the model is available for your API key
+MODEL_NAME = "gemini-1.5-pro"
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 
 # API Keys
 GEMINI_API_KEY = 'AIzaSyDuLhEqJMWWtTseYm7V5KouXJ-605afKxY'
-# os.getenv("GEMINI_API_KEY")
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # if not GEMINI_API_KEY:
-    # import warnings
-    # warnings.warn("GEMINI_API_KEY not found in environment variables. LLM functionality may be limited.")
+    # Use warnings.warn for runtime warnings instead of print
+   #  warnings.warn(
+       #  "GEMINI_API_KEY not found in environment variables or .env file. "
+       #  "LLM functionality will be unavailable. "
+       #  "Please set the GEMINI_API_KEY environment variable.",
+       #  UserWarning # Use UserWarning category
+    # )
+    # Consider if the application should exit or continue with limited functionality
+    # For now, it will continue, but LLM calls will fail later.
 
 # Vector Database Configuration
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
@@ -52,20 +63,18 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "5"))
 
 # Embedding Model
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2")
 
 # Web Scraping Configuration
-SCRAPING_INTERVAL = "86400"  # Default to daily (24 hours in seconds)
-REQUEST_DELAY = "5"  # 5 seconds between requests
+# Default to daily (24 hours in seconds)
+SCRAPING_INTERVAL = int(os.getenv("SCRAPING_INTERVAL", "86400"))
+# Default: 5 seconds between requests per domain
+REQUEST_DELAY = int(os.getenv("REQUEST_DELAY", "5"))
 
-# Trusted websites for scraping
-TRUSTED_WEBSITES = [
-    # Add your trusted websites here
-    "https://www.purebhakti.com",
-    "https://www.vedabase.com",
-    "https://www.bhakta.org",
-    # Add more as needed
-]
+# Trusted websites for scraping (example list)
+TRUSTED_WEBSITES_STR = os.getenv("TRUSTED_WEBSITES", "https://www.purebhakti.com,https://vedabase.io/en/,https://bhaktivedantavediclibrary.org/") # Example
+TRUSTED_WEBSITES = [site.strip() for site in TRUSTED_WEBSITES_STR.split(',') if site.strip()]
+
 
 # Cloud Storage Configuration
 # AWS
@@ -83,4 +92,4 @@ AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_CONTAINER_NAME = os.getenv("AZURE_CONTAINER_NAME")
 
 # Logging Configuration
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper() # Ensure uppercase
