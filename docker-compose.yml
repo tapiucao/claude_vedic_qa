@@ -1,51 +1,66 @@
-version: '3.11'
-
 services:
   vedic-knowledge-ai:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000" # API port
+      - "8000:8000" # Map host port 8000 to container port 8000 (API)
     volumes:
+      # Mount data directory for PDFs, cache, exports etc.
       - ./data:/app/data
-      - .:/app # Mount current directory for code changes if needed during dev
+      # Mount source code for development (optional, remove for production build)
+      - ./src:/app/src
+      - ./api.py:/app/api.py
+      - ./app.py:/app/app.py
+      - ./src/config.py:/app/src/config.py # Ensure config changes reflect if mounted
     env_file:
-      - .env
-    # Make sure the API waits for Chroma server to be healthy
-    depends_on:
-      chroma:
-        condition: service_healthy
-    restart: unless-stopped
+      - .env # Load environment variables from .env file
     environment:
-      # Pass Chroma host/port to the application container
+      # Explicitly set Chroma connection details for the app service
+      # The vector_store.py code will pick these up
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8001 # Internal port for Chroma server
+      # Ensure Python path includes src if needed, though WORKDIR and COPY should handle it
+      # - PYTHONPATH=/app
+    depends_on:
+      chroma:
+        # Wait for the chroma service to be healthy before starting the app
+        condition: service_healthy
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 5 # Increased retries
-      start_period: 60s # Increased start period
+        # Test if the API endpoint '/' is reachable
+        test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+        interval: 30s
+        timeout: 10s
+        retries: 5 # Increased retries
+        start_period: 60s # Increased start period to allow app initialization
 
   chroma:
     image: chromadb/chroma:latest # Use the official ChromaDB image
     ports:
-      - "8001:8001" # Expose Chroma server port (adjust if 8001 conflicts)
+      # You can expose Chroma's port externally if needed for direct access/debugging
+      # But it's not required for the app service communication
+      - "8001:8001"
     volumes:
-      # Persist Chroma data outside the container in a named volume
+      # Use a named volume to persist ChromaDB data across container restarts
       - chroma_data:/chroma/chroma
     environment:
       - IS_PERSISTENT=TRUE # Enable persistence within the Chroma container volume
       - ANONYMIZED_TELEMETRY=FALSE # Optional: disable telemetry
-    # Add healthcheck for Chroma server
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/heartbeat"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+        # Check Chroma's heartbeat endpoint
+        test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/heartbeat"]
+        interval: 5s
+        timeout: 3s
+        retries: 10
+        start_period: 10s
     restart: unless-stopped
 
 volumes:
-  chroma_data: # Define the named volume for Chroma persistence
+  # Define the named volume for Chroma persistence
+  chroma_data:
+    driver: local # Use the default local volume driver
+    driver_opts:
+      type: none # Use the host filesystem directly
+      device: ./data/chroma_data # Path to the data directory on the host
+      o: bind # Bind mount option to ensure data is persistent across container restarts

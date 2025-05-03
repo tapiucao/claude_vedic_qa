@@ -90,8 +90,6 @@ class VedicVectorStore:
         try:
             # Add documents to the vector store
             self.vector_store.add_documents(documents)
-            # Persist the changes
-            self.vector_store.persist()
             logger.info(f"Added {len(documents)} documents to vector store")
         except Exception as e:
             logger.error(f"Error adding documents to vector store: {str(e)}")
