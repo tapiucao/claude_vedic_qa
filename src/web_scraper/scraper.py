@@ -357,84 +357,70 @@ class VedicWebScraper:
     def lookup_sanskrit_term(self, term: str, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
         """Looks up a Sanskrit term on Vedabase.io and parses the result page."""
         logger.info(f"Looking up Sanskrit term: '{term}' on Vedabase.io")
+        search_url = f"https://vedabase.io/en/search/synonyms/?original={quote_plus(term)}" # URL Encode term
 
-        # Construct the search URL (ensure term is URL-encoded if necessary, though Vedabase seems tolerant)
-        # from urllib.parse import quote_plus
-        # search_url = f"https://vedabase.io/en/search/synonyms/?original={quote_plus(term)}"
-        search_url = f"https://vedabase.io/en/search/synonyms/?original={term}"
-
-        # Fetch the search result page HTML
+        # Use the scraper's own fetch_url method correctly
         html = self.fetch_url(search_url, bypass_cache=bypass_cache)
         if not html:
-            logger.error(f"Failed to fetch search results page for term: {term}")
+            logger.error(f"Failed to fetch search results page for term: {term} from {search_url}")
             return None
 
-        # --- Parse the HTML using BeautifulSoup ---
         try:
             soup = BeautifulSoup(html, 'lxml')
-
             term_data: Dict[str, Any] = {
-                "term": term,
-                "url": search_url, # Include the source URL
-                "devanagari": None,
-                "transliteration": None, # Vedabase might show this implicitly
-                "definition": None,
-                "occurrences": [], # List of {"reference": str, "text": str}
-                "sources": set() # Use a set for unique sources initially
+                "term": term, "url": search_url, "devanagari": None,
+                "transliteration": None, "definition": None,
+                "occurrences": [], "sources": set()
             }
 
-            # Find the main content area (structure might change on Vedabase)
-            # Inspect the page structure carefully (e.g., using browser dev tools)
-            # Example selectors (adjust based on current Vedabase structure):
-            term_header = soup.select_one('h1.term-title, h1.r-title') # Example selectors
-            main_content = soup.select_one('div.r-synonyms-details, div.term-details') # Example
+            # Selectors might need updating if Vedabase changes layout
+            term_header = soup.select_one('h1.r-title') # More specific selector
+            main_content = soup.select_one('div.r-synonyms-details') # More specific
 
-            if not main_content:
-                logger.warning(f"Could not find main content area on Vedabase page for term: {term}")
-                # Check if it's a "not found" page
-                if "not found" in html.lower():
-                     logger.warning(f"Term '{term}' not found on Vedabase.")
-                     return term_data # Return empty data
-                # return None # Or return None if structure is unexpected
+            if not term_header or not main_content: # Check if main elements are present
+                 # Check for "not found" message specifically
+                 not_found_el = soup.select_one("div.synonym-not-found, p.no-results") # Example selectors
+                 if not_found_el or "not found" in html.lower():
+                     logger.warning(f"Term '{term}' not found on Vedabase ({search_url}).")
+                     term_data["sources"] = [] # Ensure sources is list even if empty
+                     return term_data # Return data indicating not found
+                 else:
+                     logger.warning(f"Could not find expected content structure on Vedabase page for term: {term} ({search_url}). Page structure may have changed.")
+                     term_data["sources"] = []
+                     return term_data # Return empty data, but log warning
 
-            # Extract Devanagari if present (often in a specific span class)
-            devanagari_el = main_content.select_one('span.sa, span.term-devanagari') if main_content else None
-            if devanagari_el:
-                term_data["devanagari"] = devanagari_el.get_text(strip=True)
 
-            # Extract the definition/meaning (often in a div with class 'meaning' or similar)
-            definition_el = main_content.select_one('div.meaning, div.term-definition') if main_content else None
-            if definition_el:
-                 # Get text, potentially cleaning up multiple paragraphs
-                 term_data["definition"] = definition_el.get_text(separator="\n", strip=True)
+            # Extract Devanagari from header or specific span
+            devanagari_el = term_header.select_one('span.sa') if term_header else None
+            if devanagari_el: term_data["devanagari"] = devanagari_el.get_text(strip=True)
+            # Transliteration might be part of the header text itself
+            # term_data["transliteration"] = term_header.get_text(strip=True).replace(term_data["devanagari"] or '', '').strip()
 
-            # Find occurrences (often listed in items with specific classes)
-            # Example: occurrences might be in <div class="hit-item"> or similar
-            occurrence_items = soup.select('div.hit-item, div.occurrence-item') # Adjust selector
+            definition_el = main_content.select_one('div.meaning')
+            if definition_el: term_data["definition"] = definition_el.get_text(separator="\n", strip=True)
+
+            occurrence_items = main_content.select('div.hit-item') # Selector for occurrences
             for item in occurrence_items:
-                ref_el = item.select_one('a.reference-link, a.hit-link') # Link with reference text
-                text_el = item.select_one('div.hit-text, div.occurrence-context') # Text snippet
-
+                ref_el = item.select_one('a.hit-link')
+                text_el = item.select_one('div.hit-text')
                 if ref_el and text_el:
                     reference = ref_el.get_text(strip=True)
                     verse_text = text_el.get_text(strip=True)
-                    occurrence_data = {"reference": reference, "text": verse_text}
-                    term_data["occurrences"].append(occurrence_data)
-                    # Add the base reference (e.g., 'BG 2.13') to sources
-                    term_data["sources"].add(reference.split(',')[0].strip()) # Extract base reference
+                    term_data["occurrences"].append({"reference": reference, "text": verse_text})
+                    term_data["sources"].add(reference.split(',')[0].strip())
 
-
-            # Convert sources set to list for JSON serialization
             term_data["sources"] = sorted(list(term_data["sources"]))
 
-            # --- TODO: Define or remove the call to _add_term_to_knowledge_base ---
-            # if term_data and term_data.get("occurrences"):
-            #     logger.info(f"Term '{term}' found with {len(term_data['occurrences'])} occurrences. Consider adding to knowledge base.")
-            #     # self._add_term_to_knowledge_base(term_data) # This method needs to be implemented elsewhere (e.g., in a main application class or knowledge base manager)
+            # --- Define or remove the call to _add_term_to_knowledge_base ---
+            # This method should likely exist in a higher-level application/manager class,
+            # not within the scraper itself.
+            # if term_data["occurrences"]:
+            #     logger.debug(f"Term '{term}' found with occurrences. TODO: Implement addition to knowledge base.")
+                # Example: self.knowledge_base_manager.add_term(term_data)
 
             logger.info(f"Successfully looked up and parsed term: {term}")
             return term_data
 
         except Exception as e:
              logger.error(f"Error parsing Vedabase page for term '{term}': {e}", exc_info=True)
-             return None
+             return None # Indicate failure

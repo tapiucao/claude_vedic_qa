@@ -1,111 +1,130 @@
 # src/test_gemini_api.py
 """
 Test script for Gemini API to diagnose model availability issues.
-Reads API Key from config.
+Reads API Key and Model Name from config.
 """
 import os
 import sys
 import google.generativeai as genai
+import warnings
 
-# Import API Key from config
-# Assuming src is in the Python path or run from the parent directory
+# Import necessary config variables safely
 try:
+    # Assumes script is run from project root (e.g., python src/test_gemini_api.py)
     from src.config import GEMINI_API_KEY, MODEL_NAME
 except ImportError:
-    print("Error: Could not import configuration. Make sure src is in PYTHONPATH or run from the project root.")
-    # Attempt to load directly if run from src directory
+    # Fallback if run directly from src directory
     try:
-         from config import GEMINI_API_KEY, MODEL_NAME
+        from config import GEMINI_API_KEY, MODEL_NAME
     except ImportError:
-        print("Error: config.py not found.")
+        print("CRITICAL ERROR: Could not import configuration (config.py). "
+              "Ensure the script is run correctly relative to the 'src' directory "
+              "or that 'src' is in the PYTHONPATH.", file=sys.stderr)
         sys.exit(1)
 
+# Suppress the specific UserWarning about convert_system_message_to_human if needed elsewhere
+# warnings.filterwarnings("ignore", message="Convert_system_message_to_human will be deprecated!")
 
 def test_gemini_api():
-    """Test the Gemini API and display available models."""
-    print("Testing Gemini API connectivity...")
+    """Tests Gemini API connectivity, lists models, and attempts generation."""
+    print("--- Testing Gemini API Connectivity ---")
 
-    # Check if API key is loaded
     if not GEMINI_API_KEY:
-        print("\nError: GEMINI_API_KEY is not set in your environment variables or .env file.")
-        print("Please set the API key and try again.")
-        sys.exit(1) # Exit if no key
+        print("\nERROR: GEMINI_API_KEY is not set.")
+        print("Please set it in your environment variables or a .env file in the project root.")
+        sys.exit(1)
+    else:
+         # Mask part of the key for display
+         masked_key = GEMINI_API_KEY[:4] + "*****" + GEMINI_API_KEY[-4:]
+         print(f"Using API Key: {masked_key}")
+
 
     try:
-        # Configure the API
         genai.configure(api_key=GEMINI_API_KEY)
 
-        # List available models
-        print("Retrieving available models...")
-        models = genai.list_models()
+        print("\nRetrieving available models...")
+        models = list(genai.list_models()) # Convert iterator to list
 
-        # Filter for generative models (check for 'generateContent' method)
+        # Filter for models supporting 'generateContent'
         generative_models = [
             model for model in models
             if 'generateContent' in model.supported_generation_methods
         ]
 
-        if generative_models:
-            print(f"\nFound {len(generative_models)} models supporting 'generateContent':")
-            available_model_names = []
-            for i, model in enumerate(generative_models, 1):
-                # Model name often looks like "models/gemini-1.5-flash-latest"
-                # We usually use the shorter name like "gemini-1.5-flash-latest"
-                simplified_name = model.name.split('/')[-1]
-                available_model_names.append(simplified_name)
-                print(f"  {i}. {model.name} (Simplified: {simplified_name})")
-                print(f"     - Display name: {model.display_name}")
-                print(f"     - Supported generation methods: {', '.join(model.supported_generation_methods)}")
+        if not generative_models:
+            print("\nERROR: No generative models found for your API key.")
+            print("Check API key permissions (ensure Generative Language API is enabled in Google Cloud project).")
+            sys.exit(1)
 
+        print(f"\nFound {len(generative_models)} models supporting 'generateContent':")
+        available_model_names_simplified = []
+        for i, model in enumerate(generative_models, 1):
+            simplified_name = model.name.split('/')[-1]
+            available_model_names_simplified.append(simplified_name)
+            print(f"  {i}. {model.name} (Simplified: {simplified_name})")
+            # print(f"     - Display name: {model.display_name}") # Optional detail
 
-            # Check if the configured MODEL_NAME is available
-            print(f"\nChecking availability of configured model: '{MODEL_NAME}'...")
-            if MODEL_NAME in available_model_names:
-                 print(f"Model '{MODEL_NAME}' is available.")
-                 test_model_name = MODEL_NAME
-            elif available_model_names:
-                 test_model_name = available_model_names[0] # Fallback to first available
-                 print(f"Warning: Configured model '{MODEL_NAME}' not found in list.")
-                 print(f"Falling back to test with first available model: '{test_model_name}'")
-            else:
-                 print("Error: No suitable generative models found, cannot perform test generation.")
-                 sys.exit(1)
-
-
-            # Test a simple completion with the selected model
-            print(f"\nTesting simple generation with model: '{test_model_name}'...")
-            model = genai.GenerativeModel(test_model_name)
-            response = model.generate_content("What is the meaning of the Sanskrit term 'citta'?")
-
-            print("\nResponse from Gemini model:")
-            print("-" * 50)
-            # Accessing response content might vary slightly depending on version/model
-            # Using response.text is common for simple text generation
-            try:
-                print(response.text)
-            except ValueError as ve:
-                print(f"Could not extract text directly. Might be blocked. Details: {ve}")
-                print("Full response object:", response)
-            except AttributeError:
-                 print("Could not access response.text. Full response object:", response)
-
-            print("-" * 50)
-
-            print("\nAPI test completed.")
-            print(f"Ensure MODEL_NAME in config.py is set to an available model (e.g., '{test_model_name}' or another from the list).")
-
+        # Check configured model
+        print(f"\nConfigured MODEL_NAME: '{MODEL_NAME}'")
+        if MODEL_NAME in available_model_names_simplified:
+             print(f"Configured model '{MODEL_NAME}' IS available.")
+             test_model_name = MODEL_NAME
+        elif available_model_names_simplified:
+             test_model_name = available_model_names_simplified[0] # Fallback to first available
+             print(f"WARNING: Configured model '{MODEL_NAME}' not found in the available list.")
+             print(f"--> Will attempt test using first available model: '{test_model_name}'")
         else:
-            print("\nError: No generative models found for your API key.")
-            print("Please check your API key permissions and ensure it has access to Gemini models.")
+             # Should not happen if generative_models list was not empty, but safety check
+             print("ERROR: No suitable models found to perform test generation.")
+             sys.exit(1)
 
+        print(f"\nAttempting simple generation with model: '{test_model_name}'...")
+        model_instance = genai.GenerativeModel(test_model_name)
+
+        # Example prompt
+        prompt = "Explain the concept of 'ahimsa' in Vedic thought briefly."
+        print(f"Prompt: \"{prompt}\"")
+
+        # Generate content
+        response = model_instance.generate_content(prompt)
+
+        print("\nResponse from Gemini model:")
+        print("-" * 50)
+        # Robustly access response text, handling potential blocking or errors
+        try:
+            # Access parts if available (safer for complex responses)
+            if response.parts:
+                print(response.parts[0].text)
+            else:
+                # Fallback to .text, might raise error if blocked
+                print(response.text)
+        except ValueError as ve:
+            print(f"ERROR: Could not extract text. Response might be blocked due to safety settings or other issues.")
+            print(f"Details: {ve}")
+            print("\nPrompt Feedback:", response.prompt_feedback)
+            # print("Full Response Object:", response) # For debugging if needed
+        except AttributeError:
+             print("ERROR: Could not access response text attribute.")
+             # print("Full Response Object:", response) # For debugging if needed
+        except Exception as e:
+             print(f"ERROR: An unexpected error occurred accessing the response: {e}")
+             # print("Full Response Object:", response) # For debugging if needed
+
+
+        print("-" * 50)
+        print("\nAPI test sequence completed.")
+        print(f"Recommendation: Ensure MODEL_NAME in config.py (currently '{MODEL_NAME}') matches an available and suitable model from the list above.")
+
+    except google.api_core.exceptions.PermissionDenied as e:
+         print(f"\nERROR: Permission Denied accessing Google AI API: {e}")
+         print("Check API key validity and ensure the associated Google Cloud project has the 'Generative Language API' enabled.")
     except Exception as e:
-        print(f"\nAn error occurred: {str(e)}")
-        print("\nPossible solutions:")
-        print("1. Verify your GEMINI_API_KEY is correct and active.")
-        print("2. Check network connectivity and firewall settings.")
-        print("3. Ensure Google Cloud Project associated with the key has 'Generative Language API' enabled.")
-        print("4. Update the Google Generative AI library: pip install -U google-generativeai")
-        print("5. If using a VPN, try temporarily disabling it.")
+        print(f"\nAn unexpected ERROR occurred: {str(e)}")
+        print("Troubleshooting suggestions:")
+        print("- Verify your GEMINI_API_KEY.")
+        print("- Check network connection and firewall.")
+        print("- Update Google AI library: pip install -U google-generativeai")
+        print("- Check Google Cloud project status and API enablement.")
 
 if __name__ == "__main__":
     test_gemini_api()
