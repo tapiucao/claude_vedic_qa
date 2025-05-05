@@ -39,7 +39,7 @@ os.makedirs(WEB_CACHE_DIR, exist_ok=True)
 
 # LLM Configuration
 # Example: "gemini-1.5-flash", "gemini-1.5-pro" - Ensure the model is available for your API key
-MODEL_NAME = "gemini-1.5-pro"
+MODEL_NAME = "gemini-2.0-flash-001"
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 
@@ -67,9 +67,9 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-mpnet-
 
 # Web Scraping Configuration
 # Default to daily (24 hours in seconds)
-SCRAPING_INTERVAL = int(os.getenv("SCRAPING_INTERVAL", "86400"))
+SCRAPING_INTERVAL = 86400
 # Default: 5 seconds between requests per domain
-REQUEST_DELAY = int(os.getenv("REQUEST_DELAY", "5"))
+REQUEST_DELAY = 5
 
 # Trusted websites for scraping (example list)
 TRUSTED_WEBSITES_STR = os.getenv("TRUSTED_WEBSITES", "https://www.purebhakti.com,https://vedabase.io/en/,https://bhaktivedantavediclibrary.org/") # Example
