@@ -30,15 +30,14 @@ for path in [DATA_DIR, PDF_DIR, DB_DIR, TEMP_DIR, EXPORT_DIR, QA_LOGS_DIR, REPOR
     os.makedirs(path, exist_ok=True)
 
 # LLM Configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.5-flash-latest") # Use gemini-1.5-flash-latest or check availability
+# Example: "gemini-1.5-flash", "gemini-1.5-pro" - Ensure the model is available for your API key
+MODEL_NAME = "gemini-2.0-flash-001"
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048")) # Gemini 1.5 Flash pode suportar mais
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", 'YOUR_GEMINI_API_KEY_HERE') # Get from .env or replace
-if GEMINI_API_KEY == 'YOUR_GEMINI_API_KEY_HERE':
-    warnings.warn("GEMINI_API_KEY is not set in environment or .env file. Using placeholder.")
+# --- API Keys ---
 
-
+GEMINI_API_KEY = 'AIzaSyDuLhEqJMWWtTseYm7V5KouXJ-605afKxY'
 # Vector Database Configuration
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
