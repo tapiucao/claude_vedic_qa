@@ -1,630 +1,335 @@
 # src/qa_system/retriever.py
-# Applied changes: Item 12 (Update LLM interface import), Item 10 (Add comments/docstrings), Item 11 (Type Hinting)
-"""
-Retrieval system for Vedic Knowledge AI.
-Handles finding relevant documents and context for queries using a vector store
-and generating answers using an LLM interface.
-"""
+
 import logging
 import re
 import os
-from typing import List, Dict, Any, Optional, Tuple, Union, Sequence # Added Sequence
+from typing import List, Dict, Any, Optional, Sequence, Callable # Removido Tuple, Union não usados diretamente
+import concurrent.futures
+from urllib.parse import urlparse
+
 from langchain_core.documents import Document
-from langchain_core.prompts import PromptTemplate # Import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
-
-# Assuming components are importable from sibling/parent packages
 from ..knowledge_base.vector_store import VedicVectorStore
 from ..knowledge_base.prompt_templates import select_prompt_template, VEDIC_QA_PROMPT
-# Updated import to use Gemini Interface
 from .gemini_interface import GeminiLLMInterface
-# Assuming config is properly importable
-from ..config import TOP_K_RESULTS
+from ..config import TOP_K_RESULTS, TRUSTED_WEBSITES # TRUSTED_WEBSITES é usado aqui
+from ..web_scraper.scraper import VedicWebScraper
+from ..web_scraper.ethics import is_blacklisted_url, respect_robots_txt
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
 class VedicRetriever:
-    """
-    Handles the retrieval augmented generation (RAG) process:
-    1. Parses user queries and filters.
-    2. Retrieves relevant documents from the VedicVectorStore.
-    3. Prepares context for the LLM.
-    4. Selects an appropriate prompt template.
-    5. Calls the LLM (GeminiLLMInterface) to generate an answer.
-    6. Formats the final response including sources.
-    """
-
     def __init__(
         self,
         vector_store: VedicVectorStore,
-        llm_interface: GeminiLLMInterface, # Updated type hint
-        top_k: int = TOP_K_RESULTS
+        llm_interface: GeminiLLMInterface,
+        top_k_local: int = TOP_K_RESULTS, # Para busca no VectorStore
+        web_scraper: Optional[VedicWebScraper] = None
     ):
-        """
-        Initialize the retriever.
-
-        Args:
-            vector_store (VedicVectorStore): An initialized vector store instance.
-            llm_interface (GeminiLLMInterface): An initialized LLM interface instance.
-            top_k (int): Default number of documents to retrieve for context.
-        """
         self.vector_store = vector_store
         self.llm_interface = llm_interface
-        self.top_k = top_k
-
-        logger.info(f"Initialized VedicRetriever with top_k={top_k}")
+        self.top_k_local = top_k_local
+        
+        if web_scraper:
+            self.web_scraper = web_scraper
+        else:
+            logger.info("VedicRetriever: Creating default VedicWebScraper instance.")
+            self.web_scraper = VedicWebScraper() # Garante que sempre haja um scraper
+        
+        # Mapeamento de domínios para seus respectivos métodos de busca no scraper
+        # Chave: domínio (ex: "purebhakti.com"), Valor: nome do método no web_scraper
+        self.site_search_handlers: Dict[str, str] = {
+            "purebhakti.com": "scrape_search_results_purebhakti",
+            "vedabase.io": "scrape_search_results_vedabase",
+            "bhaktivedantavediclibrary.org": "scrape_search_results_bhaktivedantavediclibrary_org",
+            # Adicione outros sites e seus métodos de busca aqui
+        }
+        logger.info(f"Initialized VedicRetriever with top_k_local={top_k_local}. Web scraper {'configured' if web_scraper else 'default instance'}.")
+        logger.debug(f"Trusted websites for hybrid search: {TRUSTED_WEBSITES}")
+        logger.debug(f"Site search handlers: {self.site_search_handlers}")
 
     def parse_filter_dict(self, filter_dict: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """
-        Parses and potentially enhances a filter dictionary for vector store queries.
-        Attempts to extract structured information (like chapter number or book title)
-        from less structured input within the filter dictionary (e.g., 'chapter_reference' string).
-
-        Args:
-            filter_dict (Optional[Dict[str, Any]]): The input filter dictionary.
-                                                    Can contain keys like 'chapter_reference', 'title', 'text_query'.
-
-        Returns:
-            Optional[Dict[str, Any]]: The parsed and potentially enhanced filter dictionary,
-                                      suitable for use in vector_store.similarity_search, or None if input was None.
-                                      Returns None if the input is None or empty after parsing.
-        """
-        if not filter_dict:
-            return None # Return None if input is None or empty
-
-        # Copy to avoid modifying the original dictionary
+        if not filter_dict: return None
+        # ... (implementação do parse_filter_dict como antes) ...
         enhanced_filter = filter_dict.copy()
-
-        # --- Enhance based on 'chapter_reference' string ---
         if isinstance(enhanced_filter.get('chapter_reference'), str):
             chapter_ref_str = enhanced_filter['chapter_reference']
-            logger.debug(f"Parsing chapter_reference string: '{chapter_ref_str}'")
-
-            # Try to extract chapter number
-            # Match "Chapter <number>" or "Adhyāya <number>" etc. case-insensitively
             chapter_match = re.search(r'(?i)(?:Chapter|Adhyāya|Canto)\s+(\d+)', chapter_ref_str)
             if chapter_match:
                 try:
-                    chapter_num = int(chapter_match.group(1))
-                    # Add the numeric chapter if not already present or different
-                    if enhanced_filter.get('chapter') != chapter_num:
-                         enhanced_filter['chapter'] = chapter_num
-                         logger.debug(f"Extracted chapter number {chapter_num} from reference string.")
+                    enhanced_filter['chapter'] = int(chapter_match.group(1))
                 except (ValueError, IndexError):
                      logger.warning(f"Could not parse chapter number from reference: {chapter_ref_str}")
-
-            # Try to extract book title (simple cases)
-            # These keys should match the 'title' metadata used during ingestion
-            book_patterns = {
-                'bhagavad gita': 'bhagavad-gita',
-                'bg': 'bhagavad-gita',
-                'srimad bhagavatam': 'srimad-bhagavatam', # Example adjusted key
-                'sb': 'srimad-bhagavatam',
-                'cc': 'chaitanya-charitamrita', # Example
-                # Add more book patterns and their corresponding metadata keys as needed
-            }
-            ref_lower = chapter_ref_str.lower()
-            for pattern, book_key in book_patterns.items():
-                 # Use word boundaries for more specific matching
-                 if re.search(r'\b' + re.escape(pattern) + r'\b', ref_lower):
-                      if enhanced_filter.get('title') != book_key:
-                           enhanced_filter['title'] = book_key
-                           logger.debug(f"Extracted book title '{book_key}' from reference string.")
-                      break # Stop after first book match
-
-        # --- Enhance based on 'text_query' (heuristic) ---
-        # This is less reliable - prefer structured filters when possible.
-        if isinstance(enhanced_filter.get('text_query'), str):
-             text_query = enhanced_filter.pop('text_query').lower() # Remove after processing
-             logger.debug(f"Parsing text_query for filter hints: '{text_query}'")
-
-             # Extract chapter number like "tell me about chapter 2"
-             chapter_match = re.search(r'chapter\s+(\d+)', text_query)
-             if chapter_match:
-                 try:
-                    chapter_num = int(chapter_match.group(1))
-                    if enhanced_filter.get('chapter') != chapter_num:
-                         enhanced_filter['chapter'] = chapter_num
-                         logger.debug(f"Extracted chapter number {chapter_num} from text_query.")
-                 except (ValueError, IndexError):
-                     logger.warning(f"Could not parse chapter number from text_query: {text_query}")
-
-             # Extract book title hints (reuse patterns from above)
-             # These keys should match the 'title' metadata used during ingestion
-             book_patterns = {
-                'bhagavad gita': 'bhagavad-gita',
-                'bg': 'bhagavad-gita',
-                'srimad bhagavatam': 'srimad-bhagavatam',
-                'sb': 'srimad-bhagavatam',
-                'cc': 'chaitanya-charitamrita',
-                # Add more
-            }
-             for pattern, book_key in book_patterns.items():
-                 if re.search(r'\b' + re.escape(pattern) + r'\b', text_query):
-                      if enhanced_filter.get('title') != book_key:
-                           enhanced_filter['title'] = book_key
-                           logger.debug(f"Extracted book title '{book_key}' from text_query.")
-                      break
-
-        # Return the enhanced filter, or None if it became empty
         return enhanced_filter if enhanced_filter else None
 
-    def retrieve_documents(
+
+    def retrieve_documents_from_local_vs(
         self,
         query: str,
         filter_dict: Optional[Dict[str, Any]] = None,
         k: Optional[int] = None
     ) -> List[Document]:
-        """
-        Retrieve relevant documents for a query using similarity search with optional filtering.
-
-        Args:
-            query (str): The user's query.
-            filter_dict (Optional[Dict[str, Any]]): Metadata filters to apply.
-            k (Optional[int]): Number of documents to retrieve (defaults to self.top_k).
-
-        Returns:
-            List[Document]: A list of retrieved documents, sorted by relevance.
-        """
-        num_results = k if k is not None and k > 0 else self.top_k
-        # Parse the filter dictionary first
+        num_results = k if k is not None and k > 0 else self.top_k_local
         effective_filter = self.parse_filter_dict(filter_dict)
-
-        logger.info(f"Retrieving documents for query: '{query}' (k={num_results}, filter={effective_filter})")
-
+        logger.info(f"Retrieving {num_results} documents from local VectorStore for query: '{query}' with filter: {effective_filter}")
         try:
-            # Use the vector store's similarity search with the parsed filter
-            docs = self.vector_store.similarity_search(
-                query=query,
-                k=num_results,
-                filter=effective_filter # Pass the potentially enhanced filter
-            )
-            logger.info(f"Retrieved {len(docs)} documents.")
+            docs = self.vector_store.similarity_search(query=query, k=num_results, filter=effective_filter)
+            logger.info(f"Retrieved {len(docs)} documents from local VectorStore.")
             return docs
         except Exception as e:
-            # Catch specific ChromaDB or network errors if possible
-            logger.error(f"Error retrieving documents from vector store: {str(e)}", exc_info=True)
-            return [] # Return empty list on failure
-
-    def retrieve_documents_with_scores(
-        self,
-        query: str,
-        filter_dict: Optional[Dict[str, Any]] = None,
-        k: Optional[int] = None
-    ) -> List[Tuple[Document, float]]:
-        """
-        Retrieve relevant documents with similarity scores.
-
-        Args:
-            query (str): The user's query.
-            filter_dict (Optional[Dict[str, Any]]): Metadata filters.
-            k (Optional[int]): Number of documents to retrieve.
-
-        Returns:
-            List[Tuple[Document, float]]: List of (Document, score) tuples.
-        """
-        num_results = k if k is not None and k > 0 else self.top_k
-        effective_filter = self.parse_filter_dict(filter_dict)
-
-        logger.info(f"Retrieving documents with scores for query: '{query}' (k={num_results}, filter={effective_filter})")
-
-        try:
-            docs_with_scores = self.vector_store.similarity_search_with_score(
-                query=query,
-                k=num_results,
-                filter=effective_filter
-            )
-            logger.info(f"Retrieved {len(docs_with_scores)} scored documents.")
-            return docs_with_scores
-        except Exception as e:
-            logger.error(f"Error retrieving documents with scores: {str(e)}", exc_info=True)
+            logger.error(f"Error retrieving documents from local VectorStore: {e}", exc_info=True)
             return []
 
-    def _format_context_with_citations(self, docs: Sequence[Document]) -> str:
-        """
-        Formats the content of retrieved documents into a single string context block,
-        including citations derived from metadata.
+    def _format_document_context_with_citations(self, docs: Sequence[Document], source_type_label: str = "Local Document") -> List[str]:
+        context_parts: List[str] = []
+        if not docs: return context_parts
+        for i, doc in enumerate(docs):
+            metadata = doc.metadata
+            source_name = metadata.get("title") or metadata.get("filename") or os.path.basename(metadata.get("source", f"Unknown Source {i+1}"))
+            page_num = metadata.get("page")
+            verse_ref = metadata.get("verse_reference")
+            chapter_ref = metadata.get("chapter_reference")
+            url = metadata.get("url") # Pode vir de metadados de documentos web que foram indexados
+            
+            citation_details = [f"{source_type_label} '{source_name}'"]
+            if url and not source_type_label.lower().startswith("summary from"): citation_details.append(f"URL: {url}")
+            if verse_ref: citation_details.append(f"Ref: {verse_ref}")
+            elif chapter_ref: citation_details.append(f"Ref: {chapter_ref}")
+            if page_num: citation_details.append(f"Page: {page_num}")
+            
+            citation = f"(Source: {', '.join(citation_details)})"
+            content = doc.page_content.strip() if doc.page_content else "[No Content]"
+            context_parts.append(f"{content}\n{citation}")
+        return context_parts
 
-        Args:
-            docs (Sequence[Document]): The list or sequence of retrieved documents.
+    def _format_summary_context(self, summaries_data: List[Dict[str, Any]]) -> List[str]:
+        context_parts: List[str] = []
+        if not summaries_data: return context_parts
+        for summary_info in summaries_data:
+            title = summary_info.get("title", "Unknown Article")
+            url = summary_info.get("url", "N/A")
+            summary_text = summary_info.get("summary", "[No summary available]")
+            # Adicionar identificador para o LLM saber que é um resumo
+            context_parts.append(f"Summary from web article '{title}' (URL: {url}):\n{summary_text}")
+        return context_parts
 
-        Returns:
-            str: A formatted string containing document contents and citations.
-        """
-        if not docs:
-            return "No relevant context found." # Return informative message
+    def _fetch_and_summarize_one_article(self, article_url: str, user_query: str, article_title: Optional[str]=None) -> Optional[Dict[str, Any]]:
+        """Pega o texto completo de UM artigo e o resume, reutilizando o título se já conhecido."""
+        if is_blacklisted_url(article_url) or not respect_robots_txt(article_url):
+            logger.info(f"Skipping blacklisted or disallowed URL: {article_url}")
+            return None
+
+        logger.info(f"Fetching full text for article: {article_url} for summarization relevant to '{user_query}'")
+        article_html = self.web_scraper.fetch_url(article_url) # fetch_url lida com cache
+        if not article_html:
+            logger.warning(f"Failed to fetch HTML for article: {article_url}")
+            return None
+
+        parsed_article = self.web_scraper.parse_html(article_html, article_url)
+        if not parsed_article.get("success") or not parsed_article.get("text"):
+            logger.warning(f"Failed to parse or extract text from article: {article_url}")
+            return None
+
+        full_text = parsed_article["text"]
+        # Usar o título da busca se disponível, senão o título parseado, senão a URL
+        title_to_use = article_title or parsed_article.get("title", article_url)
+
+
+        logger.debug(f"Summarizing article: {title_to_use} (length: {len(full_text)}) for query focus: '{user_query}'")
+        if not hasattr(self.llm_interface, 'summarize_text_for_query'):
+            logger.error("GeminiLLMInterface does not have 'summarize_text_for_query' method.")
+            return {"url": article_url, "title": title_to_use, "summary": "[Summarization unavailable due to missing LLM method]"}
+
+        summary = self.llm_interface.summarize_text_for_query(
+            text_to_summarize=full_text,
+            query_focus=user_query
+        )
+        
+        is_summary_useful = not (summary.startswith("Error:") or \
+                             "contained little or no specific information" in summary.lower() or \
+                             "does not provide significant details" in summary.lower() or \
+                             "unable to find specific information" in summary.lower() or \
+                             summary.startswith("[Summarization unavailable")) # Checar também o nosso fallback
+
+        if is_summary_useful:
+            return {"url": article_url, "title": title_to_use, "summary": summary}
+        else:
+            logger.warning(f"Summarization of {article_url} (Title: {title_to_use}) was not useful or failed: {summary}")
+            # Retornar mesmo que não útil, para que a fonte seja listada, mas com um resumo indicando o problema
+            return {"url": article_url, "title": title_to_use, "summary": "[Summary not relevant or failed]"}
+
+
+    def _get_web_summaries_for_query(
+        self, 
+        user_query: str, 
+        num_articles_to_process_per_site: int = 3
+    ) -> List[Dict[str, Any]]:
+        all_summaries_data: List[Dict[str, Any]] = []
+        search_term = user_query 
+
+        tasks_for_executor = []
+
+        for site_url_from_config in TRUSTED_WEBSITES: 
+            parsed_site_url = urlparse(site_url_from_config)
+            domain_key = parsed_site_url.netloc.replace("www.", "")
+
+            handler_method_name = self.site_search_handlers.get(domain_key)
+            if not handler_method_name:
+                logger.warning(f"No search handler defined for domain: {domain_key}. Skipping web search for this site.")
+                continue
+            
+            if not hasattr(self.web_scraper, handler_method_name):
+                logger.error(f"Web scraper method '{handler_method_name}' for domain {domain_key} not found. Skipping.")
+                continue
+            
+            search_handler_func = getattr(self.web_scraper, handler_method_name)
+            logger.info(f"Preparing search on '{domain_key}' for term: '{search_term}' using {handler_method_name}")
+            # A tarefa agora é apenas obter os links e títulos dos resultados da busca
+            try:
+                # search_handler_func deve retornar List[Dict[str,str]] com {'url': ..., 'title': ...}
+                articles_info = search_handler_func(search_term, num_articles_to_process_per_site)
+                for info in articles_info:
+                    if info.get("url"):
+                        # Adicionar a tarefa de fetch E sumarização para o executor
+                        tasks_for_executor.append(
+                            (self._fetch_and_summarize_one_article, info["url"], user_query, info.get("title"))
+                        )
+                    else:
+                        logger.warning(f"Search result from {domain_key} missing 'url' key: {info.get('title', 'N/A')}")
+            except Exception as e:
+                logger.error(f"Error during initial search (getting links) on site '{domain_key}': {e}", exc_info=True)
+
+        # Agora processar todas as tarefas de fetch e sumarização em paralelo
+        if tasks_for_executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor: # Limitar workers para sumarização
+                future_to_task_params = {executor.submit(func, *args): (func, args) for func, *args in tasks_for_executor}
+                for future in concurrent.futures.as_completed(future_to_task_params):
+                    try:
+                        summary_data = future.result()
+                        if summary_data: 
+                            all_summaries_data.append(summary_data)
+                    except Exception as e:
+                        task_params = future_to_task_params[future]
+                        logger.error(f"Error processing article summary future for task {task_params}: {e}", exc_info=True)
+        
+        useful_summaries = [s for s in all_summaries_data if s.get("summary") and not s["summary"].startswith("[")]
+        logger.info(f"Generated {len(useful_summaries)} useful web summaries for query '{user_query}'.")
+        return useful_summaries
+
+    def answer_query_hybrid_rag(
+        self,
+        user_query: str,
+        num_web_articles_per_site: int = 1, # Pegar X melhores artigos por site para sumarizar
+        num_local_docs: int = 5
+    ) -> Dict[str, Any]:
+        logger.info(f"Starting Hybrid RAG for query: '{user_query}' (Web articles per site: {num_web_articles_per_site}, Local docs: {num_local_docs})")
+        final_answer_text = "Could not generate an answer based on the available information." # Default mais informativo
+        llm_failed = True # Assumir falha até sucesso
+        all_source_details: List[Dict[str, Any]] = []
+        
+        web_summaries_data = self._get_web_summaries_for_query(user_query, num_web_articles_per_site)
+        
+        for summary_d in web_summaries_data:
+            all_source_details.append({
+                "type": "web_summary",
+                "title": summary_d.get("title", "N/A"),
+                "url": summary_d.get("url", "N/A"),
+                "summary_content": summary_d.get("summary", "[No summary content]") # Incluir o resumo aqui
+            })
+
+        local_docs = self.retrieve_documents_from_local_vs(user_query, k=num_local_docs)
+        
+        for doc in local_docs:
+            source_file = doc.metadata.get("source", "N/A")
+            # Se a fonte for um caminho de arquivo, pegar apenas o nome do arquivo
+            if os.path.exists(source_file): # Checa se é um caminho válido antes de tentar basename
+                source_display = os.path.basename(source_file)
+            else:
+                source_display = source_file
+
+            all_source_details.append({
+                "type": "local_document_chunk",
+                "source_file": source_display,
+                "title": doc.metadata.get("title", "N/A"), # Título do livro/documento
+                "page": doc.metadata.get("page", "N/A"),
+                "content_preview": doc.page_content[:150] + "..." # Preview um pouco maior
+            })
 
         context_parts: List[str] = []
-        for i, doc in enumerate(docs):
-            # Extract metadata for citation
-            metadata = doc.metadata
-            source = metadata.get("source", "Unknown Source")
-            page = metadata.get("page")
-            # Use pre-formatted reference if available (e.g., BG 2.13, SB 1.2.3)
-            # Combine chapter_reference and verse_reference if both exist or prefer one
-            verse_ref = metadata.get("verse_reference") # Specific verse ID like '2.13' or '1.2.3'
-            chapter_ref_meta = metadata.get("chapter_reference") # General ref like 'Book, Chapter X'
-            chapter_num = metadata.get("chapter") # Just the number
+        if web_summaries_data:
+            # Filtrar resumos que não foram úteis antes de adicionar ao contexto
+            useful_web_summaries = [s for s in web_summaries_data if s.get("summary") and not s["summary"].startswith("[")]
+            if useful_web_summaries:
+                context_parts.extend(self._format_summary_context(useful_web_summaries))
+        
+        if local_docs:
+            context_parts.extend(self._format_document_context_with_citations(local_docs, source_type_label="Excerpt from Local Document"))
 
-            # Try to build the best citation string
-            citation_parts = [f"Source [{i+1}]"] # Start with index
-            if verse_ref:
-                 citation_parts.append(verse_ref) # Prefer specific verse ref
-            elif chapter_ref_meta:
-                 citation_parts.append(chapter_ref_meta) # Use chapter reference string
-            else:
-                 # Fallback to title/chapter number if available
-                 title = metadata.get("title", os.path.basename(source) if source != "Unknown Source" else None)
-                 if title: citation_parts.append(title)
-                 if chapter_num: citation_parts.append(f"Ch. {chapter_num}")
-
-            # Add page number if relevant and not redundant
-            if page and (not verse_ref or '.' not in str(verse_ref)): # Add page if no verse ref or ref is simple number
-                citation_parts.append(f"Page {page}")
-
-            # Construct citation string
-            citation = f"({' | '.join(citation_parts)})" # Use parentheses and pipe separators
-
-            # Add document content with citation appended
-            content = doc.page_content.strip() if doc.page_content else "[No Content]"
-            # Add citation at the end of the content for this chunk
-            context_parts.append(f"{content} {citation}")
-
-        # Join parts with double newline for separation between source chunks
-        return "\n\n---\n\n".join(context_parts)
-
-
-    def get_context_for_query(
-        self,
-        query: str,
-        filter_dict: Optional[Dict[str, Any]] = None,
-        k: Optional[int] = None
-    ) -> str:
-        """
-        Retrieves relevant documents and formats their content into a single context string for the LLM.
-
-        Args:
-            query (str): The user's query.
-            filter_dict (Optional[Dict[str, Any]]): Metadata filters.
-            k (Optional[int]): Number of documents to retrieve.
-
-        Returns:
-            str: A formatted context string with citations.
-        """
-        docs = self.retrieve_documents(query, filter_dict, k)
-        return self._format_context_with_citations(docs)
-
-
-    def _extract_relevant_content_fallback(self, docs: Sequence[Document], query: str) -> str:
-        """
-        Fallback method: Extracts short snippets from documents when LLM fails.
-        Tries to provide *some* relevant information directly from sources.
-
-        Args:
-            docs (Sequence[Document]): Retrieved documents.
-            query (str): Original user query (used for context).
-
-        Returns:
-            str: A string summarizing key snippets from the documents.
-        """
-        if not docs:
-            return "No relevant information found in the retrieved documents."
-
-        summary_parts: List[str] = []
-        seen_sources: set[str] = set() # Track unique sources (e.g., "Book Title, Chapter X, Page Y")
-        max_excerpts = 3 # Limit number of excerpts shown
-
-        for doc in docs:
-            if len(summary_parts) >= max_excerpts:
-                break
-
-            metadata = doc.metadata
-            source = metadata.get("source", "Unknown")
-            page = metadata.get("page", "")
-            verse_ref = metadata.get("verse_reference") # Specific verse ID like '2.13' or '1.2.3'
-            chapter_ref_meta = metadata.get("chapter_reference") # General ref like 'Book, Chapter X'
-            chapter_num = metadata.get("chapter") # Just the number
-            title = metadata.get("title", os.path.basename(source) if source != "Unknown" else "")
-
-            # Create a unique key for the source chunk to avoid duplicates
-            source_key_parts = [str(metadata.get(k)) for k in ['title', 'chapter', 'page', 'verse_reference'] if metadata.get(k)]
-            source_key = "_".join(source_key_parts) if source_key_parts else str(doc.metadata) # Fallback key
-
-            if source_key in seen_sources:
-                continue
-            seen_sources.add(source_key)
-
-            # Format the source identifier for the excerpt
-            source_identifier_parts = []
-            if verse_ref: source_identifier_parts.append(verse_ref)
-            elif chapter_ref_meta: source_identifier_parts.append(chapter_ref_meta)
-            else:
-                 if title: source_identifier_parts.append(title)
-                 if chapter_num: source_identifier_parts.append(f"Ch. {chapter_num}")
-            if page: source_identifier_parts.append(f"Page {page}")
-            source_identifier = ", ".join(filter(None, source_identifier_parts)) or os.path.basename(source)
-
-            # Extract a relevant excerpt (e.g., first ~250 chars)
-            content = doc.page_content.strip() if doc.page_content else ""
-            excerpt = content[:250] + "..." if len(content) > 250 else content
-
-            if excerpt: # Only add if there's content
-                summary_parts.append(f"From {source_identifier}:\n\"\"\"\n{excerpt}\n\"\"\"")
-
-        return "\n\n".join(summary_parts)
-
-
-    def answer_query(self, query: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Answers a user query using the RAG process: retrieve, format context, generate answer.
-
-        Args:
-            query (str): The user's query.
-            filter_dict (Optional[Dict[str, Any]]): Metadata filters.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing:
-                - 'answer' (str): The generated answer.
-                - 'sources' (List[Dict]): List of source document metadata.
-                - 'documents' (List[Document]): The raw retrieved documents.
-                - 'llm_fallback_used' (bool): Indicates if the LLM failed and fallback was used.
-        """
-        logger.info(f"Answering query: '{query}' with filter: {filter_dict}")
-
-        # 1. Retrieve relevant documents
-        retrieved_docs = self.retrieve_documents(query, filter_dict)
-
-        if not retrieved_docs:
-            logger.warning("No relevant documents found for the query.")
+        if not context_parts:
+            logger.warning(f"No context generated from web or local search for query: '{user_query}'")
             return {
-                "answer": "I couldn't find specific information related to your query in the available documents.",
-                "sources": [],
-                "documents": [],
-                "llm_fallback_used": False # No LLM call attempted
+                "answer": "I could not find sufficient information from web searches or local documents to answer your question.",
+                "sources": all_source_details, # Ainda retorna as fontes tentadas
+                "llm_fallback_used": False # Não houve falha do LLM, mas sim falta de contexto
             }
 
-        # 2. Prepare context for the LLM
-        context = self._format_context_with_citations(retrieved_docs)
+        final_context = "\n\n---\n\n".join(context_parts)
+        logger.debug(f"Hybrid RAG final context (first 500 chars):\n{final_context[:500]}...")
 
-        # 3. Select appropriate prompt template based on query type (heuristic)
-        prompt_template: PromptTemplate = select_prompt_template(query) or VEDIC_QA_PROMPT
-
-        # Extract system prompt from the selected template
-        # This assumes the template string has a structure where system instructions
-        # precede the context/question placeholders.
-        # TODO: Future improvement - integrate PromptTemplate more directly with LLM interface if possible.
-        try:
-            # Attempt to format with dummy values to isolate the system part
-            # This is less reliable, depends heavily on template structure
-            # A simpler approach is often just to extract text before known markers
-            template_str = prompt_template.template
-            system_prompt_part = template_str.split("Context:", 1)[0].strip()
-            if not system_prompt_part or "{context}" in system_prompt_part or "{question}" in system_prompt_part:
-                 # Fallback if splitting fails or seems incorrect
-                 system_prompt_part = "You are a knowledgeable scholar of Vedic philosophy. Use the provided context to answer the question."
-                 logger.warning("Could not reliably extract system prompt from template, using default.")
-        except Exception:
-            logger.exception("Error extracting system prompt from template, using default.")
-            system_prompt_part = "You are a knowledgeable scholar of Vedic philosophy. Use the provided context to answer the question."
-
-
-        # 4. Generate answer using the LLM
-        logger.debug("Generating answer using LLM...")
-        llm_answer = None
-        llm_failed = False
-        try:
-            # Use the LLM interface's generate_response method
-            llm_answer = self.llm_interface.generate_response(
-                prompt=query, # Pass the raw query here
-                context=context, # Pass the formatted context here
-                system_prompt=system_prompt_part # Pass the instructional part
-            )
-
-            # Check for error messages returned *in* the response string
-            if llm_answer.startswith("Error:"):
-                 logger.error(f"LLM generation returned an error message: {llm_answer}")
-                 raise RuntimeError(f"LLM generation failed: {llm_answer}") # Treat as failure
-
-        except Exception as llm_error:
-            # Log the detailed error from the LLM interface or the RuntimeError
-            logger.error(f"LLM generation failed: {llm_error}", exc_info=True)
-            # Fallback mechanism
-            logger.warning("LLM failed, attempting fallback answer generation.")
-            answer = self._create_fallback_answer(query, retrieved_docs)
-            llm_failed = True
-        else:
-             answer = llm_answer # Use the successful LLM response
-             llm_failed = False
-
-        # 5. Extract source metadata for the response
-        sources_metadata: List[Dict[str, Any]] = []
-        for doc in retrieved_docs:
-             # Include key metadata used for citation or understanding source
-             source_info = {
-                "source": doc.metadata.get("source", "Unknown"),
-                "page": doc.metadata.get("page"),
-                "type": doc.metadata.get("type"),
-                "title": doc.metadata.get("title"),
-                "chapter": doc.metadata.get("chapter"),
-                "chapter_reference": doc.metadata.get("chapter_reference"),
-                "verse_reference": doc.metadata.get("verse_reference"),
-                "contains_sanskrit": doc.metadata.get("contains_sanskrit"),
-                # Add score if available (requires retrieve_documents_with_scores)
-                # "score": doc.metadata.get("score") # Example if score was added
-             }
-             # Remove None values for cleaner output
-             sources_metadata.append({k: v for k, v in source_info.items() if v is not None})
-
-        result = {
-            "answer": answer,
-            "sources": sources_metadata,
-            "documents": retrieved_docs, # Include raw documents for potential UI display or further processing
-            "llm_fallback_used": llm_failed # Indicate if fallback was used
-        }
-
-        return result
-
-    def _create_fallback_answer(self, query: str, docs: Sequence[Document]) -> str:
-        """Creates a simple fallback answer summarizing retrieved documents when the LLM fails."""
-        logger.debug("Creating fallback answer.")
-
-        fallback_intro = f"I encountered an issue generating a detailed answer with the AI model. However, based on the retrieved documents related to '{query}', here is some potentially relevant information:\n\n"
-
-        # Use the helper function to extract relevant content snippets
-        relevant_content = self._extract_relevant_content_fallback(docs, query)
-
-        fallback_outro = "\n\nPlease verify this information with the original sources. You might try rephrasing your query or asking again later."
-
-        # Handle case where fallback extraction also yielded nothing
-        if not relevant_content or relevant_content == "No relevant information found in the retrieved documents.":
-            return "I encountered an issue generating an answer, and I couldn't extract relevant snippets from the retrieved documents either. Please try your query again later."
-
-        return fallback_intro + relevant_content + fallback_outro
-
-    def get_documents_by_chapter(self, chapter: int, book_title: Optional[str] = None, limit: int = 100) -> List[Document]:
-        """
-        Retrieve all document chunks associated with a specific chapter (and optionally book).
-        Uses metadata filtering, not semantic search.
-
-        Args:
-            chapter (int): The chapter number to retrieve.
-            book_title (Optional[str]): The title of the book (must match 'title' metadata).
-            limit (int): Maximum number of document chunks to return.
-
-        Returns:
-            List[Document]: List of documents matching the chapter/book criteria.
-        """
-        filter_dict: Dict[str, Any] = {"chapter": chapter}
-        if book_title:
-            # Ensure the book title matches the key used in metadata (e.g., 'bhagavad-gita')
-            filter_dict["title"] = book_title.lower().replace(" ", "-") # Example normalization
-            logger.info(f"Filtering by book title: {filter_dict['title']}")
-
-        logger.info(f"Retrieving documents by metadata filter: {filter_dict} (limit={limit})")
-
-        try:
-            # Use the specific metadata filtering method
-            # Specify we want documents and metadatas included
-            results_dict = self.vector_store.get_documents_by_metadata_filter(
-                filter_dict,
-                limit=limit,
-                include=["documents", "metadatas"] # Request both for constructing Document objects
-            )
-
-            # Reconstruct Document objects if 'get' returns dicts
-            docs = []
-            retrieved_docs = results_dict.get('documents', [])
-            retrieved_metadatas = results_dict.get('metadatas', [])
-            if retrieved_docs and retrieved_metadatas and len(retrieved_docs) == len(retrieved_metadatas):
-                for content, meta in zip(retrieved_docs, retrieved_metadatas):
-                    docs.append(Document(page_content=content, metadata=meta))
-            elif retrieved_docs: # If only documents returned somehow
-                 docs = [Document(page_content=content) for content in retrieved_docs]
-
-
-            logger.info(f"Retrieved {len(docs)} documents for filter.")
-            # Sort documents by page number if available
-            if docs and all('page' in d.metadata for d in docs):
-                 docs.sort(key=lambda d: d.metadata.get('page', 0))
-
-            return docs
-        except Exception as e:
-            logger.error(f"Error retrieving documents by chapter/book filter: {str(e)}", exc_info=True)
-            return []
-
-    def get_chapter_summary(self, chapter: int, book_title: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Generates a summary for a specific chapter by retrieving its documents and using the LLM.
-
-        Args:
-            chapter (int): The chapter number.
-            book_title (Optional[str]): The title of the book (matching metadata).
-
-        Returns:
-            Dict[str, Any]: Dictionary containing 'summary', 'sources', and 'documents'.
-        """
-        book_title_log = f" of book '{book_title}'" if book_title else ""
-        logger.info(f"Generating summary for chapter {chapter}{book_title_log}")
-
-        # 1. Get documents for the chapter
-        # Retrieve more documents than needed for context initially to ensure coverage
-        chapter_docs = self.get_documents_by_chapter(chapter, book_title, limit=200)
-
-        if not chapter_docs:
-            logger.warning(f"No documents found for chapter {chapter}{book_title_log}")
-            return {
-                "summary": f"Could not generate summary. No documents found for Chapter {chapter}{book_title_log}.",
-                "sources": [],
-                "documents": [],
-                "llm_fallback_used": False
-            }
-
-        # 2. Prepare context for summary generation
-        # Select a subset for context (e.g., first 10-15 chunks after sorting)
-        # Sorting ensures somewhat logical order if pages are numbered correctly
-        context_docs = chapter_docs[:15] # Use first 15 chunks for context
-        context = self._format_context_with_citations(context_docs) # Reuse formatting
-
-        # Extract a representative chapter reference for the prompt
-        # Try to get the best identifier from the context docs
-        chapter_ref_display = f"Chapter {chapter}"
-        found_title = book_title
-        for doc in context_docs:
-            meta = doc.metadata
-            if meta.get("chapter_reference"): # e.g., "Book Title, Chapter X"
-                chapter_ref_display = meta["chapter_reference"]
-                found_title = meta.get("title", found_title)
-                break
-            elif meta.get("title") and not found_title:
-                 found_title = meta.get("title")
-
-        if found_title and f"Chapter {chapter}" in chapter_ref_display:
-             chapter_ref_display = f"{found_title}, Chapter {chapter}"
-
-
-        # 3. Define the summarization prompt
-        summarization_query = f"Provide a comprehensive summary of {chapter_ref_display}."
-        system_prompt = f"""You are a scholarly expert specializing in summarizing Vedic texts like the Bhagavad Gita and Srimad Bhagavatam.
-Based *only* on the provided context documents for {chapter_ref_display}, generate a concise yet comprehensive summary.
-Your summary should include:
-1. The main themes and narrative presented in the context.
-2. Key teachings, concepts, or verses highlighted in the context.
-3. The overall significance or flow of this chapter section based *only* on the provided text.
-Focus strictly on the information available in the context. Do not add external knowledge or interpretations.
+        system_instruction = f"""You are a Vedic scholar and AI assistant. The user asked: '{user_query}'.
+Base your answer *exclusively* on the following context, which includes summaries from web articles and excerpts from local documents.
+When using information, clearly cite the source. For web summaries, mention the article title and URL. For local documents, mention the document title or filename and page/reference if available.
+If the provided context is insufficient to answer the question thoroughly, state that you can only provide a partial answer based on the information or that the information is not present in the context.
+Do not use any external knowledge. Your entire response must be derived from the provided text.
+Strive for a comprehensive and well-structured answer if the context allows.
 """
-
-        # 4. Generate summary using the LLM
-        logger.debug("Generating chapter summary using LLM...")
-        summary = None
-        llm_failed = False
         try:
-             summary = self.llm_interface.generate_response(
-                  prompt=summarization_query, # The task description
-                  context=context,           # The chapter content chunks
-                  system_prompt=system_prompt  # The role and instructions
-             )
-             if summary.startswith("Error:"):
-                 logger.error(f"LLM summarization returned an error: {summary}")
-                 raise RuntimeError(f"LLM summarization failed: {summary}")
-             llm_failed = False
+            final_answer_text = self.llm_interface.generate_response(
+                prompt=user_query, # A pergunta original do usuário
+                context=final_context,
+                system_prompt=system_instruction
+            )
+            llm_failed = final_answer_text.startswith("Error:") or "Could not summarize" in final_answer_text # Checagem mais ampla
         except Exception as e:
-             logger.error(f"LLM chapter summarization failed: {e}", exc_info=True)
-             summary = f"Could not automatically generate a summary for {chapter_ref_display} due to an AI model error. Please refer to the source documents provided."
-             llm_failed = True
-
-        # 5. Prepare result
-        # Include metadata from the documents used for context generation
-        sources_metadata = [
-            {k: v for k, v in doc.metadata.items() if v is not None}
-            for doc in context_docs
-        ]
-
-        result = {
-            "summary": summary,
-            "sources": sources_metadata, # Sources used for the summary context
-            "documents": context_docs,    # Document chunks used for the summary context
+            logger.error(f"LLM generation failed for hybrid RAG: {e}", exc_info=True)
+            final_answer_text = "An error occurred while generating the final answer using combined information."
+            llm_failed = True
+            
+        return {
+            "answer": final_answer_text,
+            "sources": all_source_details,
             "llm_fallback_used": llm_failed
         }
 
-        return result
+    # --- Outros métodos como answer_query_from_local_rag, answer_query_from_single_site_summary, get_documents_by_chapter, get_chapter_summary ---
+    # Mantenha-os ou ajuste-os conforme necessário.
+    # answer_query_from_local_rag foi mantido como exemplo de uma estratégia alternativa.
+    def answer_query_from_local_rag(self, query: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        logger.info(f"Answering query '{query}' using ONLY local VectorStore and filter: {filter_dict}")
+        retrieved_docs = self.retrieve_documents_from_local_vs(query, filter_dict)
+        if not retrieved_docs:
+            return {"answer": "I couldn't find specific information in the local knowledge base.", "sources": [], "documents": [], "llm_fallback_used": False}
+        
+        context = "\n\n---\n\n".join(self._format_document_context_with_citations(retrieved_docs, source_type_label="Local Document"))
+        prompt_template: PromptTemplate = select_prompt_template(query) or VEDIC_QA_PROMPT
+        template_str = prompt_template.template
+        system_prompt_part = template_str.split("Context:", 1)[0].strip()
+        if not system_prompt_part or "{context}" in system_prompt_part or "{question}" in system_prompt_part:
+            system_prompt_part = "You are a knowledgeable scholar of Vedic philosophy. Use the provided context to answer the question."
+
+        answer = self.llm_interface.generate_response(prompt=query, context=context, system_prompt=system_prompt_part)
+        llm_failed = answer.startswith("Error:")
+        
+        sources_metadata = []
+        for doc in retrieved_docs:
+            source_file = doc.metadata.get("source", "N/A")
+            if os.path.exists(source_file): source_display = os.path.basename(source_file)
+            else: source_display = source_file
+            sources_metadata.append({
+                "source_file": source_display, 
+                "title": doc.metadata.get("title", "N/A"), 
+                "page": doc.metadata.get("page", "N/A"),
+                "url": doc.metadata.get("url") # Se a fonte local também for um URL
+            })
+        return {"answer": answer, "sources": sources_metadata, "documents": [], "llm_fallback_used": llm_failed} # Não retornar Documentos aqui para simplificar

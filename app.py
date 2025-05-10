@@ -243,16 +243,36 @@ class VedicKnowledgeAI:
         """Get statistics about the web cache."""
         return self.cache_manager.get_stats()
     
-    def answer_question(self, question: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Answer a question using the knowledge base."""
-        logger.info(f"Answering question: {question}")
-        result = self.retriever.answer_query(question, filter_dict)
-        
-        # Add formatted citations
-        if result.get("documents"):
-            result["formatted_citations"] = self.citation_manager.format_citation_list(result["documents"])
-        
-        return result
+    def answer_question(self, question: str, filter_dict: Optional[Dict[str, Any]] = None, strategy: str = "hybrid_rag"): # Adicionar strategy
+        """
+        Answers a question using the specified RAG strategy.
+        Strategies: "hybrid_rag", "local_rag", "web_single_site_summary" (exemplo)
+        """
+        logger.info(f"Answering question: '{question}' using strategy: {strategy}")
+        if strategy == "hybrid_rag":
+            # filter_dict não é diretamente usado por hybrid_rag da forma como está
+            # mas a busca local dentro dele poderia ser adaptada se necessário
+            return self.retriever.answer_query_hybrid_rag(
+                user_query=question
+                # Você pode expor num_web_articles_per_site e num_local_docs como parâmetros aqui também
+            )
+        elif strategy == "local_rag":
+            return self.retriever.answer_query_from_local_rag(question, filter_dict)
+        elif strategy == "web_single_site_summary":
+            # Você precisaria de uma lógica para escolher o site ou passar como parâmetro
+            # Exemplo com purebhakti.com
+            if "purebhakti.com" in self.retriever.site_search_handlers:
+                return self.retriever.answer_query_from_single_site_summary(
+                    user_query=question,
+                    search_site_domain_key="purebhakti.com"
+                )
+            else:
+                logger.warning("Purebhakti.com handler not configured for single site summary. Falling back to local RAG.")
+                return self.retriever.answer_query_from_local_rag(question, filter_dict)
+        else:
+            logger.warning(f"Unknown strategy '{strategy}'. Defaulting to hybrid_rag.")
+            
+            return self.retriever.answer_query_hybrid_rag(user_query=question)
     
     def answer_question_with_export(self, question: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Answer a question and export the Q&A pair."""

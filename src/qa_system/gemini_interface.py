@@ -176,3 +176,51 @@ class GeminiLLMInterface:
         ref_text = f" (Reference: {reference})" if reference else ""
         user_prompt = f"Explain the meaning and significance of the following verse{ref_text}:\n\n'{verse}'"
         return self.generate_response(prompt=user_prompt, context=context, system_prompt=system_prompt)
+
+    def summarize_text_for_query(
+        self,
+        text_to_summarize: str,
+        query_focus: str,
+        max_summary_length: str = "concise, around 100-150 words" # Ou número de tokens
+    ) -> str:
+        """
+        Generates a summary of the given text, focusing on its relevance to the query_focus.
+        """
+        system_prompt = f"""You are an expert summarizer. Your task is to read the following text and create a {max_summary_length} summary.
+                            The summary MUST focus specifically on the parts of the text that are most relevant to the topic: '{query_focus}'.
+                            Highlight key points, definitions, or explanations from the text related to this topic.
+                            Do not add external information. Base your summary strictly on the provided text.
+                            If the text has very little or no relevant information about '{query_focus}', state that briefly."""
+
+        # O prompt para o LLM será o próprio texto a ser resumido.
+        # O 'query_focus' é para a instrução do sistema, não para a entrada principal do LLM aqui.
+        # A "pergunta" que o LLM está respondendo aqui é implícita: "Resuma este texto com foco em X".
+
+        # Construímos o input para o método generate_response
+        # O 'prompt' principal para generate_response pode ser uma instrução simples,
+        # e o 'context' será o texto a ser resumido.
+        user_instruction_for_summarization = f"Please summarize the provided text, focusing on its relevance to '{query_focus}'."
+
+        logger.debug(f"Requesting summarization for query focus: '{query_focus}'")
+        
+        # Usar generate_response com o texto como 'context' e uma instrução como 'prompt'
+        # ou, se preferir, passar o texto diretamente como 'prompt' e o system_prompt acima.
+        # Vou usar o texto como 'prompt' principal para simplificar.
+        summary = self.generate_response(
+            prompt=text_to_summarize, # O LLM lerá este texto e seguirá o system_prompt
+            system_prompt=system_prompt
+            # Não precisa de 'context' aqui se o texto_to_summarize é o input principal.
+        )
+
+        if summary.startswith("Error:"):
+            logger.error(f"Summarization failed for query focus '{query_focus}'. LLM Error: {summary}")
+            return f"Could not summarize the text due to an error: {summary}"
+        
+        # Adicionar uma verificação se o LLM diz que não há informação relevante
+        if f"no relevant information about '{query_focus}'" in summary.lower() or \
+           "does not contain significant information regarding" in summary.lower():
+            logger.info(f"Text had little to no relevant information for query focus '{query_focus}'.")
+            # Poderia retornar uma string padrão ou o aviso do LLM
+            return f"The text was analyzed but contained little or no specific information regarding '{query_focus}'."
+
+        return summary
