@@ -5,7 +5,7 @@ import time
 from typing import Dict, List, Any, Optional, Sequence, Tuple
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin, quote_plus # Adicionado quote_plus
-
+from selenium.webdriver.common.by import By     # Para especificar como encontrar elementos com Selenium
 from langchain.docstore.document import Document
 
 from ..config import (
@@ -16,6 +16,7 @@ from ..document_processor.text_splitter import VedicTextSplitter
 from ..document_processor.sanskrit_processor import SanskritProcessor
 from .cache_manager import WebCacheManager
 from .ethics import respect_robots_txt, is_scraping_allowed, is_blacklisted_url, EthicalScraper
+import re
 
 
 logger = logging.getLogger(__name__)
@@ -221,58 +222,144 @@ class VedicWebScraper:
         if chunks: logger.debug(f"First chunk metadata from '{url}': {chunks[0].metadata}")
         return chunks
 
-    # --- MÉTODOS DE BUSCA POR SITE ---
+    # MÉTODO search_purebhakti (versão dinâmica com Selenium)
     def search_purebhakti(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
-        """ Realiza busca POST no purebhakti.com. Retorna (html_content, final_url). """
-        search_url = "https://purebhakti.com/resources/search"
-        payload = {"q": query_term, "view": "search"}
-        # Paginação para purebhakti via POST é complexa e não implementada aqui.
-        # Esta função pegará apenas a primeira página de resultados.
-        if page_number > 1:
-            logger.warning("Pagination for purebhakti.com POST search is not implemented beyond page 1 by this method.")
-            return None, None
-            
-        logger.info(f"Submitting search to {search_url} for term '{query_term}' (page {page_number})")
-        # Reutilizar fetch_url para POST
-        # A URL de cache para POSTs de busca pode ser problemática se o conteúdo variar muito
-        # para a mesma URL base. Considere não cachear resultados de busca ou usar chaves de cache mais específicas.
-        # Para simplificar, fetch_url usará a URL da busca como chave de cache.
-        html_content = self.fetch_url(search_url, method="POST", data=payload, bypass_cache=True) # Bypass cache para buscas
-        
-        # O fetch_url não retorna a URL final diretamente. Precisamos modificar fetch_url ou obter de outra forma.
-        # Por enquanto, assumimos que a URL de resultados é a mesma ou o conteúdo é o que importa.
-        # Para urljoin funcionar corretamente, precisamos da URL da página que contém os links.
-        # Se o POST redirecionar, self.session.post(...).url daria a URL final.
-        # Vamos assumir que o scraper lida com isso internamente ou que a URL base é suficiente.
-        # Idealmente, fetch_url deveria retornar (html, final_url)
-        return html_content, search_url # Retornar a URL da busca como base para urljoin
+        """
+        Realiza busca no purebhakti.com usando DynamicVedicScraper para lidar com conteúdo JS.
+        Retorna (html_content, final_url_da_pagina_de_resultados).
+        """
+        from .dynamic_scraper import DynamicVedicScraper # Importação local para evitar erro circular
 
+        base_site_url = "https://www.purebhakti.com/"
+        search_path_with_query = f"resources/search?q={quote_plus(query_term)}"
+        search_url = urljoin(base_site_url, search_path_with_query)
+
+        if page_number > 1:
+            logger.warning(f"A busca dinâmica para purebhakti.com atualmente suporta apenas a página 1. Solicitada página {page_number}.")
+
+        logger.info(f"Iniciando busca DINÂMICA em purebhakti.com para o termo '{query_term}' na URL: {search_url}")
+
+        # Assegure que self.cache_manager e self.request_delay são acessíveis aqui
+        # Eles devem ser inicializados no __init__ de VedicWebScraper
+        if not hasattr(self, 'cache_manager') or not hasattr(self, 'request_delay'):
+             logger.error("cache_manager ou request_delay não inicializados em VedicWebScraper.")
+             # Se cache_dir não estiver disponível, você pode precisar de um fallback ou erro.
+             # Aqui, estou assumindo que eles vêm de self. Se não, ajuste como você obtém cache_dir.
+             # Exemplo de fallback, mas o ideal é que self.cache_manager exista:
+             temp_cache_dir_fallback = getattr(self.cache_manager, 'cache_dir', 'data/web_cache_temp')
+             temp_request_delay_fallback = getattr(self, 'request_delay', 5)
+             dynamic_scraper = DynamicVedicScraper(cache_dir=temp_cache_dir_fallback, request_delay=temp_request_delay_fallback)
+        else:
+             dynamic_scraper = DynamicVedicScraper(cache_dir=self.cache_manager.cache_dir, request_delay=self.request_delay)
+
+        html_content = None
+        final_url_of_search_results = search_url
+
+        try:
+            if not dynamic_scraper.driver:
+                dynamic_scraper._initialize_driver()
+            
+            if not dynamic_scraper.driver:
+                 logger.error("Falha ao inicializar o driver do scraper dinâmico para a busca em purebhakti.")
+                 return None, search_url
+
+            dynamic_scraper.driver.get(search_url)
+            final_url_of_search_results = dynamic_scraper.driver.current_url
+            logger.info(f"Página de busca carregada dinamicamente: {final_url_of_search_results}")
+
+            results_loaded = dynamic_scraper.wait_for_element(selector="search-result-list", by=By.ID, wait_time=20)
+
+            if results_loaded:
+                logger.info("Contêiner de resultados 'ul#search-result-list' encontrado após carregamento dinâmico.")
+                html_content = dynamic_scraper.driver.page_source
+                if html_content and hasattr(self, 'cache_manager'): # Checa se cache_manager existe
+                    self.cache_manager.cache_content(final_url_of_search_results, html_content)
+                    logger.info(f"Conteúdo de '{final_url_of_search_results}' (obtido dinamicamente) salvo em cache.")
+            else:
+                logger.warning(f"Timeout esperando por 'ul#search-result-list' em {final_url_of_search_results}. A página pode não ter resultados ou a estrutura mudou.")
+                html_content = dynamic_scraper.driver.page_source 
+                if html_content and hasattr(self, 'cache_manager'):
+                     self.cache_manager.cache_content(final_url_of_search_results, html_content)
+            
+            # Retorno principal do try bem-sucedido
+            return html_content, final_url_of_search_results
+
+        except Exception as e:
+            logger.error(f"Erro durante a busca dinâmica em purebhakti.com para '{query_term}': {e}", exc_info=True)
+            current_url_at_error = search_url
+            # Tenta obter informações mesmo em caso de erro
+            if dynamic_scraper and dynamic_scraper.driver:
+                try:
+                    current_url_at_error = dynamic_scraper.driver.current_url
+                    if not html_content:
+                        html_content = dynamic_scraper.driver.page_source
+                except:
+                    pass
+            return html_content, current_url_at_error # Retorna o que foi possível obter
+        finally:
+            if dynamic_scraper: # Garante que dynamic_scraper foi definido
+                dynamic_scraper._close_driver()
+    # FIM DO MÉTODO search_purebhakti
+
+    # MÉTODO scrape_search_results_purebhakti (usa BeautifulSoup no HTML obtido)
     def scrape_search_results_purebhakti(self, query_term: str, num_articles: int) -> List[Dict[str, str]]:
-        """ Extrai URLs e títulos dos resultados da busca no purebhakti.com. """
         articles_found: List[Dict[str, str]] = []
-        html_results_page, base_search_url = self.search_purebhakti(query_term) # search_purebhakti retorna (html, url_usada_para_busca)
+        # Agora chama a versão de search_purebhakti que usa Selenium
+        html_results_page, base_search_url = self.search_purebhakti(query_term) 
 
         if not html_results_page or not base_search_url:
-            logger.warning(f"Could not retrieve search results page for '{query_term}' from purebhakti.com.")
+            logger.warning(f"Could not retrieve search results page for '{query_term}' from purebhakti.com (HTML not fetched by search_purebhakti).")
             return articles_found
 
         soup = BeautifulSoup(html_results_page, 'lxml')
-        results_container = soup.select_one("ul.com-finder-search-list")
-        if not results_container:
-            logger.warning(f"Could not find results container on purebhakti.com for '{query_term}'.")
-            return articles_found
+        
+        results_list_container = soup.select_one("ul#search-result-list.com-finder__results-list")
+        if not results_list_container:
+            results_list_container = soup.select_one("ul#search-result-list")
 
-        for item in results_container.select("li.result_item")[:num_articles]:
-            link_tag = item.select_one("h3.result_item_title > a.result_item_title_link")
+        if not results_list_container:
+            logger.error(f"CRITICAL: Mesmo após busca dinâmica, 'ul#search-result-list' não foi encontrado no HTML pelo BeautifulSoup para '{query_term}'.")
+            # Lógica para salvar arquivo de depuração (como antes)
+            try:
+                sanitized_query_term = re.sub(r'[^\w\-. ]', '_', query_term) 
+                sanitized_query_term = sanitized_query_term.replace(' ', '_')
+                debug_file_name = f"purebhakti_FAIL_debug_output_{sanitized_query_term}.html"
+                if len(debug_file_name) > 200:
+                    base_name_part = debug_file_name[:-5]
+                    sanitized_query_term_part = base_name_part[len("purebhakti_FAIL_debug_output_"):]
+                    max_query_len = 200 - len("purebhakti_FAIL_debug_output_") - len(".html")
+                    truncated_query_term = sanitized_query_term_part[:max_query_len]
+                    debug_file_name = f"purebhakti_FAIL_debug_output_{truncated_query_term}.html"
+                with open(debug_file_name, "w", encoding="utf-8") as f_debug:
+                   f_debug.write(html_results_page)
+                logger.info(f"Saved FAIL debug HTML for purebhakti.com search to '{debug_file_name}'")
+            except Exception as e_debug:
+                logger.error(f"Could not save FAIL debug HTML: {e_debug}")
+            return articles_found # Retorna aqui se o contêiner não for achado
+        
+        logger.info(f"Contêiner da lista de resultados ('ul#search-result-list') encontrado pelo BeautifulSoup. Extraindo itens...")
+
+        # Seletor corrigido para os itens da lista
+        for item in results_list_container.select("li.result__item")[:num_articles]: # DOIS UNDERSCORES
+            link_tag = item.select_one("p.result__title > a.result__title-link")
+            if not link_tag:
+                link_tag = item.select_one("p.result__title > a")
+
             if link_tag and link_tag.has_attr('href'):
                 href = link_tag['href']
-                title = link_tag.get_text(strip=True)
-                # Usar a URL da página de resultados (base_search_url) para resolver links relativos
-                full_url = urljoin(base_search_url, href) 
+                title_span = link_tag.select_one("span.result__title-text")
+                title = title_span.get_text(strip=True) if title_span else link_tag.get_text(strip=True)
+                
+                full_url = urljoin(base_search_url, href)
                 articles_found.append({"url": full_url, "title": title})
+                logger.debug(f"Extracted link: {title} - {full_url}")
         
-        logger.info(f"Extracted {len(articles_found)} article links from purebhakti.com search for '{query_term}'.")
-        return articles_found
+        if not articles_found and results_list_container:
+             logger.warning(f"Contêiner de resultados encontrado, mas nenhum 'li.result__item' com links correspondentes foi extraído. Verifique a estrutura interna dos 'li' ou os seletores 'p.result__title > a.result__title-link'.")
+
+        logger.info(f"Extraídos {len(articles_found)} links de artigos da busca em purebhakti.com para '{query_term}'.")
+        return articles_found # Retorno correto para este método
+    # FIM DO MÉTODO scrape_search_results_purebhakti
 
     def search_vedabase(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
         """ Realiza busca GET no vedabase.io. Retorna (html_content, final_url). """

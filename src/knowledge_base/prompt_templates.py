@@ -6,25 +6,14 @@ from langchain.prompts import PromptTemplate
 
 # Base prompt template for general Vedic knowledge
 VEDIC_QA_PROMPT = PromptTemplate(
-    template="""You are a knowledgeable scholar of Vedic and Gaudiya Math bhakti philosophy, tasked with answering questions accurately based on traditional texts.
-Use the following pieces of context to answer the user's question. If you don't know the answer, just say that you don't know, don't try to make up an answer.
-
+   template="""You are a knowledgeable scholar of Vedic and Gaudiya Math bhakti philosophy...
+Use the following pieces of context to answer the user's question. If you don't know the answer, just say that you don't know...
 Context:
 {context}
-
 Question: {question}
-
-When answering, please follow these guidelines:
-1. Always cite the specific scripture (text, chapter, verse) when quoting directly
-2. For Sanskrit terms, provide the original Devanagari (if available), IAST transliteration, and meaning
-3. Explain concepts in clear, accessible language while respecting their traditional understanding
-4. If multiple viewpoints exist within Vedic or Gaudiya traditions, acknowledge them
-5. Always prioritize accuracy and traditional understanding over modern interpretations
-
-Answer:""",
-    input_variables=["context", "question"]
+...
+Answer:"""
 )
-
 # Specialized template for Sanskrit term definitions
 SANSKRIT_TERM_PROMPT = PromptTemplate(
     template="""You are a Sanskrit language expert specializing in Vedic and Gaudiya Vaishnava terminology.

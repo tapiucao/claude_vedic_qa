@@ -124,17 +124,24 @@ class GeminiLLMInterface:
 
         if history_messages: chain_input["history"] = history_messages
         if system_prompt: chain_input["system_message"] = [SystemMessage(content=system_prompt)]
+        if context: chain_input["context_message"] = [HumanMessage(content=f"Use the following context to answer:\n--- Context Start ---\n{context}\n--- Context End ---")] # Option 2: Context as part of a human-like instruction, potentially before the actual question.
 
-        # Inject context by modifying the main user input
-        if context:
-            context_marker = "--- Context Start ---\n"
-            context_end_marker = "\n--- Context End ---"
-            chain_input["input"] = f"{context_marker}{context}{context_end_marker}\n\nQuestion: {prompt}"
+        chain_input["input"] = prompt # The user's direct question
 
         logger.debug(f"Invoking LLM chain with input keys: {list(chain_input.keys())}")
+        # For more detailed logging of the actual content being sent:
+        for key, value in chain_input.items():
+            if isinstance(value, list) and value and isinstance(value[0], BaseMessage): # Langchain message objects
+                logger.debug(f"LLM Chain Input - {key} (Messages):")
+                for msg_idx, msg_obj in enumerate(value):
+                    logger.debug(f"  Msg {msg_idx} Role: {msg_obj.type}, Content: {str(msg_obj.content)[:200]}...") # Log message type and snippet
+            else:
+                logger.debug(f"LLM Chain Input - {key}: {str(value)[:300]}...") # Log snippet of other inputs
 
         try:
             response = self.chain.invoke(chain_input)
+            logger.debug(f"LLM Raw Response: {str(response)[:500]}...") # Log raw response snippet
+
             if not response or not response.strip():
                 logger.warning("LLM returned an empty response.")
                 return "I apologize, but I received an empty response from the AI model."
@@ -184,43 +191,49 @@ class GeminiLLMInterface:
         max_summary_length: str = "concise, around 100-150 words" # Ou número de tokens
     ) -> str:
         """
-        Generates a summary of the given text, focusing on its relevance to the query_focus.
+        Gera um resumo do texto fornecido, focando na sua relevância para o query_focus.
+        O texto a ser resumido é passado como 'context'.
         """
-        system_prompt = f"""You are an expert summarizer. Your task is to read the following text and create a {max_summary_length} summary.
+        system_prompt = f"""You are an expert summarizer. 
+                            Your task is to read the provided text (which will be supplied in the context) and create a {max_summary_length} summary.
                             The summary MUST focus specifically on the parts of the text that are most relevant to the topic: '{query_focus}'.
                             Highlight key points, definitions, or explanations from the text related to this topic.
                             Do not add external information. Base your summary strictly on the provided text.
-                            If the text has very little or no relevant information about '{query_focus}', state that briefly."""
+                            If the text (in the context) has very little or no relevant information about '{query_focus}', please state that clearly (e.g., "The provided text does not contain specific information regarding '{query_focus}'.").
+                            It is crucial that you acknowledge the text is provided in the context; do not state that the text is missing."""
 
-        # O prompt para o LLM será o próprio texto a ser resumido.
-        # O 'query_focus' é para a instrução do sistema, não para a entrada principal do LLM aqui.
-        # A "pergunta" que o LLM está respondendo aqui é implícita: "Resuma este texto com foco em X".
+        # O prompt principal para generate_response será uma instrução curta,
+        # e text_to_summarize irá para o argumento 'context'.
+        user_instruction_for_summarization = f"Please summarize the provided text (found in the context given to you) with a specific focus on its relevance to the following topic: '{query_focus}'. Ensure your summary helps answer questions related to this topic."
 
-        # Construímos o input para o método generate_response
-        # O 'prompt' principal para generate_response pode ser uma instrução simples,
-        # e o 'context' será o texto a ser resumido.
-        user_instruction_for_summarization = f"Please summarize the provided text, focusing on its relevance to '{query_focus}'."
-
-        logger.debug(f"Requesting summarization for query focus: '{query_focus}'")
+        logger.debug(f"Requesting summarization. Query focus: '{query_focus}'. Text length for context: {len(text_to_summarize)}")
         
-        # Usar generate_response com o texto como 'context' e uma instrução como 'prompt'
-        # ou, se preferir, passar o texto diretamente como 'prompt' e o system_prompt acima.
-        # Vou usar o texto como 'prompt' principal para simplificar.
         summary = self.generate_response(
-            prompt=text_to_summarize, # O LLM lerá este texto e seguirá o system_prompt
+            prompt=user_instruction_for_summarization, # Instrução curta
+            context=text_to_summarize,                # Texto longo vai aqui como contexto
             system_prompt=system_prompt
-            # Não precisa de 'context' aqui se o texto_to_summarize é o input principal.
         )
 
-        if summary.startswith("Error:"):
+        # Verifica se o LLM explicitamente disse que não há informação relevante
+        # (Esta verificação pode ser mais robusta dependendo das respostas exatas do LLM)
+        if summary.startswith("Error:"): # Erro retornado pelo generate_response
             logger.error(f"Summarization failed for query focus '{query_focus}'. LLM Error: {summary}")
-            return f"Could not summarize the text due to an error: {summary}"
+            return f"[Summarization Error: {summary}]" 
         
-        # Adicionar uma verificação se o LLM diz que não há informação relevante
-        if f"no relevant information about '{query_focus}'" in summary.lower() or \
-           "does not contain significant information regarding" in summary.lower():
-            logger.info(f"Text had little to no relevant information for query focus '{query_focus}'.")
-            # Poderia retornar uma string padrão ou o aviso do LLM
-            return f"The text was analyzed but contained little or no specific information regarding '{query_focus}'."
+        # Verifica frases comuns que indicam que o LLM não encontrou informação relevante no texto
+        # (conforme instruído no system_prompt)
+        no_info_phrases = [
+            f"does not contain specific information regarding '{query_focus.lower()}'", # Convertendo query_focus para minúsculas para match
+            f"does not provide significant details regarding '{query_focus.lower()}'"
+        ]
+        summary_lower = summary.lower()
+        if any(phrase in summary_lower for phrase in no_info_phrases):
+            logger.info(f"Text had little to no relevant information for query focus '{query_focus}', according to summarizer.")
+            return summary # Retorna a própria afirmação do LLM
+        
+        # Checagem adicional para o caso do LLM insistir que o texto está faltando
+        if "provided text is missing" in summary_lower:
+            logger.error(f"Summarizer LLM claims text is missing, despite it being provided as context. Length was: {len(text_to_summarize)}")
+            return "[Summarizer Error: LLM claims text was missing]"
 
         return summary

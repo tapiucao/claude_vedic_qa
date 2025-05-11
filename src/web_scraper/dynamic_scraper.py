@@ -61,7 +61,14 @@ class DynamicVedicScraper(VedicWebScraper):
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
             # Use User-Agent from superclass headers
-            chrome_options.add_argument(f"user-agent={self.headers['User-Agent']}")
+           # Em src/web_scraper/dynamic_scraper.py, dentro de _initialize_driver(self)
+            # Use User-Agent from superclass session headers
+            if hasattr(self, 'session') and self.session.headers.get('User-Agent'):
+                chrome_options.add_argument(f"user-agent={self.session.headers['User-Agent']}")
+            else:
+                # Fallback para um User-Agent genérico se o da sessão não estiver disponível por algum motivo
+                logger.warning("User-Agent from session headers not found, using a default User-Agent for WebDriver.")
+                chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36 VedicKnowledgeBot/1.0_Dynamic")
 
             # Install or update ChromeDriver automatically
             # Use context manager for Service object if possible, though not standard

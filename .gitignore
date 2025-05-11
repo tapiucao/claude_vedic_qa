@@ -102,3 +102,4 @@ Thumbs.db
 *.lib
 *.so
 *.dylib
+.tmp*

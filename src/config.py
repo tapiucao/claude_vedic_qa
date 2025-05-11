@@ -36,12 +36,12 @@ TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
 
 # --- API Keys ---
-
 GEMINI_API_KEY = 'AIzaSyDuLhEqJMWWtTseYm7V5KouXJ-605afKxY'
+
 # Vector Database Configuration
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
-TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "5")) # Para busca local no VectorStore
+TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "10")) # Para busca local no VectorStore
 
 # Embedding Model
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2")
@@ -56,20 +56,27 @@ TRUSTED_WEBSITES = [site.strip() for site in TRUSTED_WEBSITES_STR.split(',') if 
 
 # Site-specific scraping configurations for parsing individual article pages
 SITE_SPECIFIC_SCRAPING_CONFIG = {
-    "purebhakti.com": { # Note: domain key should not include 'www.' for consistency with urlparse().netloc.replace('www.','')
+    "purebhakti.com": {
         "content_selectors": [
+            "div[itemprop='articleBody']",       # Seletor mais específico e semântico
+            "div.com-content-article__body",   # Seletor alternativo pela classe
+            # Mantemos os antigos como fallback, caso a estrutura varie em outras páginas
             "div.td-post-content",
             "article.post .entry-content",
             "div.entry-content",
         ],
-        "elements_to_remove_selectors": [
+        "elements_to_remove_selectors": [ # Revise esta lista também
             "div.td-post-source-tags", "div.td-post-sharing-bottom", "div.td-post-next-prev",
-            "div.td-author-line", "div.td-module-meta-info",
+            "div.td-author-line", "div.td-module-meta-info", # Pode ser que queira manter o autor
             "div.td-post-views", "div.td-post-comments", "div#comments",
             ".jp-relatedposts", ".td-fix-index",
+            "div.saboxplugin-wrap", # Exemplo de remoção de caixa de autor/social
+            "figure", "figcaption", # Remove figuras e suas legendas se não forem parte do texto principal
+            # Adicione aqui outros seletores para elementos que você quer remover do conteúdo extraído
         ],
-        "title_selector": "h1.entry-title",
+        "title_selector": "h1.entry-title", # Verifique se este seletor de título ainda é válido para a página do artigo
         "metadata_selectors": {
+            # Verifique se estes seletores de metadados ainda são válidos
             "article_date": {"selector": "time.entry-date.updated.td-module-date", "attribute": "datetime"},
             "author": {"selector": "div.td-module-meta-info span.td-post-author-name a"},
         }

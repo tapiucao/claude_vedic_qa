@@ -304,7 +304,7 @@ class VedicKnowledgeAI:
         docs = self.retriever.retrieve_documents(
             query=f"Sanskrit term meaning {term}",
             filter_dict=None,
-            k=5
+            k=10
         )
         
         context = ""
@@ -336,7 +336,7 @@ class VedicKnowledgeAI:
         docs = self.retriever.retrieve_documents(
             query=query,
             filter_dict=None,
-            k=5
+            k=10
         )
         
         context = ""
