@@ -223,11 +223,14 @@ class VedicPDFLoader:
 
         # Common chapter patterns (case-insensitive, look for boundaries)
         chapter_patterns = [
-            # Prioritize patterns at the start of a line or with clear titles
+            # Novo padrão específico para o formato da sua imagem (corpo do texto)
+            r'(?im)^\s*CHAPTER\s+(\d+)\s*$', # Tenta capturar "CHAPTER 15" em uma linha própria
+            r'(?im)^\s*CHAPTER\s+(\d+)\s*\n\s*Prameya:', # Tenta capturar "CHAPTER 15" seguido por "Prameya:"
+
+            # Padrões existentes (mantenha os que podem ser úteis para outros PDFs)
             r'(?im)^\s*(?:Chapter|CHAPTER|Canto|CANTO|Adhy[āa]ya|Adhyay)\s+(\d+)\b',
-            # Patterns potentially mid-line but with clear markers
             r'\b(?:Chapter|Canto|Adhy[āa]ya|Adhyay)\s+(\d+)\b',
-            r'\bSection\s+(\d+)\b', # Less common, but possible
+            r'\bSection\s+(\d+)\b',
         ]
 
         # Find the first chapter match on the page

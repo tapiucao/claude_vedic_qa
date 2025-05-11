@@ -228,7 +228,7 @@ class VedicRetriever:
     def answer_query_hybrid_rag(
         self,
         user_query: str,
-        num_web_articles_per_site: int = 1, 
+        num_web_articles_per_site: int = 2, 
         num_local_docs: int = TOP_K_RESULTS
     ) -> Dict[str, Any]:
         logger.info(f"Starting Hybrid RAG for query: '{user_query}' (Web articles per site: {num_web_articles_per_site}, Local docs: {num_local_docs})")
@@ -276,67 +276,102 @@ class VedicRetriever:
         if local_docs:
             context_parts.extend(self._format_document_context_with_citations(local_docs, source_type_label="Excerpt from Local Document"))
 
-        if not context_parts:
-            logger.warning(f"No context generated from web or local search for query: '{user_query}'")
-            return {
-                "answer": "I could not find sufficient information from web searches or local documents to answer your question.",
-                "sources": all_source_details, 
-                "llm_fallback_used": False 
-            }
+        rag_answer_text = ""
+        llm_fallback_used = False
+        rag_sources = all_source_details # all_source_details é construído antes
 
-        final_context = "\n\n---\n\n".join(context_parts)
-        logger.info(f"--- DEBUG: CONTEXTO FINAL SENDO ENVIADO PARA O LLM (Query: '{user_query}') ---")
-
-        # Alternativa: Salvar em arquivo para análise mais fácil
-        try:
-            import re
-            safe_query = re.sub(r'[^\w\-. ]', '_', user_query).replace(' ', '_')[:50]
-            debug_context_filename = f"debug_final_context_{safe_query}.txt"
-            with open(debug_context_filename, "w", encoding="utf-8") as f_ctx:
-                f_ctx.write(f"Query: {user_query}\n\n")
-                f_ctx.write("System Prompt (início):\n")
-                f_ctx.write(system_instruction[:500] + "...\n\n") # system_instruction é definido logo depois
-                f_ctx.write("--- CONTEXTO COMBINADO ---\n")
-                f_ctx.write(final_context)
-            logger.info(f"Contexto final completo salvo em: {debug_context_filename}")
-        except Exception as e_save_ctx:
-            logger.error(f"Não foi possível salvar o arquivo de contexto final de depuração: {e_save_ctx}")
-
-        logger.debug(f"Hybrid RAG final context (primeiros 500 caracteres para query '{user_query}'):\n{final_context[:100]}...") # Este log você já tinha, é bom.
-
-        # REFINED system_instruction
-        system_instruction = f"""You are a Vedic scholar and AI assistant.
-Your task is to answer the user's question: '{user_query}'
-You MUST base your answer *exclusively* on the following provided context. The context may include summaries from web articles and excerpts from local documents.
-Directly synthesize the information from the context to answer the question.
-When referencing information from the context:
-- For web summaries, mention the article title and its URL.
-- For local documents, mention the document title or filename and page/reference if available.
-If the provided context does not contain sufficient information to answer the question comprehensively, clearly state that the information is not found in the provided texts or is insufficient.
-Do not use any external knowledge. Do not provide generic statements about your capabilities or how you will answer. Focus *only* on answering the question using the given context.
-Provide a clear, concise, and well-structured answer based *only* on the information given below.
-"""
-        try:
-            # Enhanced logging for LLM call
-            logger.debug(f"Calling LLM Interface. User Query: '{user_query}'. System Prompt (first 200 chars): '{system_instruction[:200]}...'. Context Length: {len(final_context)}")
+        if not context_parts: # Se não há contexto RAG
+            logger.warning(f"No context generated from web or local search for query: '{user_query}'. Attempting direct LLM query.")
+            # Não há necessidade de chamar o LLM com contexto vazio aqui, faremos isso no fallback abaixo.
+            # rag_answer_text = "I could not find sufficient information from web searches or local documents to answer your question." # Mensagem padrão
+            # Simula uma resposta RAG que indica falha para acionar o fallback
+            rag_answer_text = "No information found in RAG context." 
+        else:
+            final_context = "\n\n---\n\n".join(context_parts)
+            system_instruction_rag = f"""You are a Vedic scholar and AI assistant.
+                                        Your task is to answer the user's question: '{user_query}'
+                                        You MUST base your answer *exclusively* on the following provided context. The context may include summaries from web articles and excerpts from local documents.
+                                        Directly synthesize the information from the context to answer the question.
+                                        When referencing information from the context:
+                                        - For web summaries, mention the article title and its URL.
+                                        - For local documents, mention the document title or filename and page/reference if available.
+                                        If the provided context does not contain sufficient information to answer the question comprehensively, CLEARLY STATE THIS (e.g., "Based on the provided texts, I cannot answer...", or "The documents do not contain specific information about...").
+                                        Do not use any external knowledge. Do not provide generic statements. Focus *only* on answering the question using the given context.
+                                        Provide a clear, concise, and well-structured answer based *only* on the information given below.
+                                        If you cannot answer, explicitly say so."""
             
-            final_answer_text = self.llm_interface.generate_response(
-                prompt=user_query, 
-                context=final_context,
-                system_prompt=system_instruction
-            )
-            llm_failed = final_answer_text.startswith("Error:") or "Could not summarize" in final_answer_text 
-            logger.info(f"LLM response for query '{user_query}' (first 200 chars): {final_answer_text[:200]}...") # Log beginning of LLM response
-        except Exception as e:
-            logger.error(f"LLM generation failed for hybrid RAG query '{user_query}': {e}", exc_info=True)
-            final_answer_text = "An error occurred while generating the final answer using combined information."
-            llm_failed = True
+            # Salvar o contexto final para depuração (como antes)
+            # ... (código para salvar debug_final_context_...txt) ...
+
+            try:
+                logger.debug(f"Calling LLM Interface (RAG attempt). User Query: '{user_query}'. Context Length: {len(final_context)}")
+                rag_answer_text = self.llm_interface.generate_response(
+                    prompt=user_query, 
+                    context=final_context,
+                    system_prompt=system_instruction_rag
+                )
+                logger.info(f"RAG LLM response for query '{user_query}' (first 200 chars): {rag_answer_text[:200]}")
+            except Exception as e:
+                logger.error(f"LLM generation failed for hybrid RAG query '{user_query}': {e}", exc_info=True)
+                rag_answer_text = "An error occurred while generating the answer using RAG."
+
+        # Critérios para decidir se a resposta RAG foi "ruim" ou "não encontrada"
+        # Ajuste estas frases conforme as respostas típicas do seu LLM quando ele não encontra
+        failure_indicators = [
+            "i am sorry, but",
+            "i cannot answer",
+            "does not contain information",
+            "no information found",
+            "unable to find specific information",
+            "do not contain sufficient information",
+            "documents do not contain specific information",
+            "no information found in rag context" # Adicionado para o caso de não haver contexto RAG
+        ]
+
+        # Verifica se a resposta do RAG indica falha
+        rag_failed_to_answer = any(indicator in rag_answer_text.lower() for indicator in failure_indicators) or \
+                               rag_answer_text.startswith("Error:") or \
+                               not rag_answer_text.strip() # Resposta vazia também é falha
+
+        final_answer_to_user = rag_answer_text
+
+        if rag_failed_to_answer:
+            logger.warning(f"RAG system could not answer or provided an insufficient answer for '{user_query}'. Attempting direct LLM query without RAG context.")
             
+            system_instruction_direct = f"""You are a knowledgeable Vedic scholar and AI assistant. 
+                                            Answer the following question to the best of your ability based on your general knowledge.
+                                            User's question: '{user_query}'
+                                            Provide a comprehensive and informative answer. If you do not know the answer, simply state that you do not have that information.
+                                            """
+            try:
+                direct_llm_answer = self.llm_interface.generate_response(
+                    prompt=user_query,
+                    context=None,  # SEM CONTEXTO RAG
+                    system_prompt=system_instruction_direct
+                )
+                logger.info(f"Direct LLM response for query '{user_query}' (first 200 chars): {direct_llm_answer[:200]}")
+                
+                # Você pode decidir como apresentar essa resposta de fallback.
+                # Ex: prefixar com uma mensagem ou usá-la diretamente.
+                final_answer_to_user = f"[Answer from general knowledge as RAG context was insufficient]:\n{direct_llm_answer}"
+                # Ou, se a resposta RAG foi apenas um "não sei", substitua completamente:
+                # final_answer_to_user = direct_llm_answer
+
+                llm_fallback_used = True
+                rag_sources = [] # Limpa as fontes RAG, já que não foram usadas para a resposta final.
+                                # Ou você pode querer manter as fontes RAG e adicionar uma nota de que elas não foram úteis.
+            except Exception as e:
+                logger.error(f"Direct LLM query also failed for query '{user_query}': {e}", exc_info=True)
+                final_answer_to_user = rag_answer_text # Mantém a resposta original do RAG (que já era de falha)
+                # Ou uma mensagem de erro mais genérica:
+                # final_answer_to_user = "I encountered an issue trying to answer your question through both RAG and direct query."
+
         return {
-            "answer": final_answer_text,
-            "sources": all_source_details,
-            "llm_fallback_used": llm_failed
+            "answer": final_answer_to_user,
+            "sources": rag_sources, # Fontes do RAG (podem estar vazias se o fallback foi usado e você as limpou)
+            "llm_fallback_used": llm_fallback_used 
         }
+
 
     def answer_query_from_local_rag(self, query: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         logger.info(f"Answering query '{query}' using ONLY local VectorStore and filter: {filter_dict}")
