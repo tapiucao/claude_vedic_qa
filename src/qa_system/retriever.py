@@ -3,19 +3,22 @@
 import logging
 import re
 import os
-from typing import List, Dict, Any, Optional, Sequence, Callable 
+from typing import List, Dict, Any, Optional, Sequence, Tuple # Adicionado Tuple
 import concurrent.futures
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus # Adicionado quote_plus
 
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 
+# Importações relativas para componentes internos
 from ..knowledge_base.vector_store import VedicVectorStore
 from ..knowledge_base.prompt_templates import select_prompt_template, VEDIC_QA_PROMPT
 from .gemini_interface import GeminiLLMInterface
 from ..config import TOP_K_RESULTS, TRUSTED_WEBSITES
-from ..web_scraper.scraper import VedicWebScraper
+from ..web_scraper.scraper import VedicWebScraper # Scraper base (requests)
+from ..web_scraper.dynamic_scraper import DynamicVedicScraper # Scraper dinâmico (Selenium)
 from ..web_scraper.ethics import is_blacklisted_url, respect_robots_txt
+# from selenium.webdriver.common.by import By # Não é mais necessário aqui, pois é usado dentro dos scrapers
 
 logger = logging.getLogger(__name__)
 
@@ -24,27 +27,52 @@ class VedicRetriever:
         self,
         vector_store: VedicVectorStore,
         llm_interface: GeminiLLMInterface,
-        top_k_local: int = TOP_K_RESULTS, # Para busca no VectorStore
-        web_scraper: Optional[VedicWebScraper] = None
+        top_k_local: int = TOP_K_RESULTS,
     ):
         self.vector_store = vector_store
         self.llm_interface = llm_interface
         self.top_k_local = top_k_local
         
-        if web_scraper:
-            self.web_scraper = web_scraper
-        else:
-            logger.info("VedicRetriever: Creating default VedicWebScraper instance.")
-            self.web_scraper = VedicWebScraper() 
+        logger.info("VedicRetriever: Criando instância do VedicWebScraper (estático).")
+        self.static_web_scraper = VedicWebScraper()
+
+        # Instância para o scraper dinâmico, inicializada quando necessário (lazy loading)
+        self._dynamic_web_scraper_instance: Optional[DynamicVedicScraper] = None
         
+        # Mapeia o nome do método de scraping de resultados de busca.
+        # Estes métodos serão chamados na instância de scraper apropriada (estática ou dinâmica).
         self.site_search_handlers: Dict[str, str] = {
-            "purebhakti.com": "scrape_search_results_purebhakti",
-            "vedabase.io": "scrape_search_results_vedabase",
-            "bhaktivedantavediclibrary.org": "scrape_search_results_bhaktivedantavediclibrary_org",
+            "purebhakti.com": "scrape_search_results_purebhakti", # Deve usar Selenium internamente via DynamicVedicScraper
+            "vedabase.io": "scrape_search_results_vedabase",       # Deve usar Selenium internamente via DynamicVedicScraper
+            "bhaktivedantavediclibrary.org": "scrape_search_results_bhaktivedantavediclibrary_org", # Atualmente estático
         }
-        logger.info(f"Initialized VedicRetriever with top_k_local={top_k_local}. Web scraper {'configured' if web_scraper else 'default instance'}.")
+        # Define quais sites sabidamente requerem scraper dinâmico para sua funcionalidade de BUSCA
+        self.sites_requiring_dynamic_search = ["purebhakti.com", "vedabase.io"]
+        # Define quais sites sabidamente requerem scraper dinâmico para buscar o CONTEÚDO DE ARTIGOS individuais
+        self.sites_requiring_dynamic_article_fetch = ["purebhakti.com", "vedabase.io"]
+
+        logger.info(f"Initialized VedicRetriever with top_k_local={top_k_local}.")
         logger.debug(f"Trusted websites for hybrid search: {TRUSTED_WEBSITES}")
         logger.debug(f"Site search handlers: {self.site_search_handlers}")
+        logger.debug(f"Sites requiring dynamic search: {self.sites_requiring_dynamic_search}")
+        logger.debug(f"Sites requiring dynamic article fetch: {self.sites_requiring_dynamic_article_fetch}")
+
+    def _get_dynamic_scraper(self) -> DynamicVedicScraper:
+        """Inicializa e retorna a instância do DynamicVedicScraper de forma preguiçosa."""
+        if self._dynamic_web_scraper_instance is None:
+            logger.info("VedicRetriever: Inicializando instância do DynamicVedicScraper.")
+            cache_dir = self.static_web_scraper.cache_manager.cache_dir
+            request_delay = self.static_web_scraper.request_delay # Dynamic scraper também tem seu próprio request_delay
+            self._dynamic_web_scraper_instance = DynamicVedicScraper(cache_dir=cache_dir, request_delay=request_delay)
+            # O driver do Selenium é inicializado dentro do DynamicVedicScraper quando necessário (ex: no primeiro fetch_url dele)
+        return self._dynamic_web_scraper_instance
+
+    def _shutdown_dynamic_scraper(self):
+        """Fecha o driver do Selenium se a instância do DynamicVedicScraper foi utilizada."""
+        if self._dynamic_web_scraper_instance:
+            logger.info("VedicRetriever: Solicitando fechamento da instância do DynamicVedicScraper.")
+            self._dynamic_web_scraper_instance._close_driver()
+            self._dynamic_web_scraper_instance = None
 
     def parse_filter_dict(self, filter_dict: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not filter_dict: return None
@@ -58,7 +86,6 @@ class VedicRetriever:
                 except (ValueError, IndexError):
                      logger.warning(f"Could not parse chapter number from reference: {chapter_ref_str}")
         return enhanced_filter if enhanced_filter else None
-
 
     def retrieve_documents_from_local_vs(
         self,
@@ -115,12 +142,25 @@ class VedicRetriever:
             return None
 
         logger.info(f"Fetching full text for article: {article_url} for summarization relevant to '{user_query}'")
-        article_html = self.web_scraper.fetch_url(article_url) 
+        
+        scraper_for_article_fetch = self.static_web_scraper 
+        article_domain = urlparse(article_url).netloc.replace("www.", "")
+        if article_domain in self.sites_requiring_dynamic_article_fetch: # Usa a lista definida no __init__
+            scraper_for_article_fetch = self._get_dynamic_scraper()
+            logger.info(f"Usando DYNAMIC scraper para buscar conteúdo do artigo de {article_domain} para URL: {article_url}")
+        else:
+            logger.info(f"Usando STATIC scraper para buscar conteúdo do artigo de {article_domain} para URL: {article_url}")
+
+        # O método fetch_url será chamado na instância de scraper apropriada
+        article_html = scraper_for_article_fetch.fetch_url(article_url) 
+
         if not article_html:
-            logger.warning(f"Failed to fetch HTML for article: {article_url}")
+            logger.warning(f"Falha ao buscar HTML para o artigo: {article_url} usando {type(scraper_for_article_fetch).__name__}")
             return None
 
-        parsed_article = self.web_scraper.parse_html(article_html, article_url)
+        # Para parse_html, você PODE usar o static_web_scraper, pois ele opera sobre a string HTML
+        # A menos que parse_html também precise de estado do driver, o que não é comum.
+        parsed_article = self.static_web_scraper.parse_html(article_html, article_url)
         if not parsed_article.get("success") or not parsed_article.get("text"):
             logger.warning(f"Failed to parse or extract text from article: {article_url}")
             return None
@@ -130,14 +170,11 @@ class VedicRetriever:
 
         logger.info(f"--- DEBUG: Texto extraído de '{title_to_use}' (URL: {article_url}) ---")
         logger.info(f"Comprimento do texto: {len(full_text)} caracteres")
-        # Para ver uma amostra no log (cuidado com logs muito grandes):
         logger.debug(f"Amostra do texto extraído (primeiros 1500 caracteres):\n{full_text[:1500]}")
         logger.debug(f"Amostra do texto extraído (últimos 500 caracteres):\n{full_text[-500:]}")
 
-        # Opcional: Salvar o texto completo em um arquivo para análise fácil
         try:
-            import re
-            safe_title = re.sub(r'[^\w\-. ]', '_', title_to_use).replace(' ', '_')[:100] # Nome de arquivo seguro
+            safe_title = re.sub(r'[^\w\-. ]', '_', title_to_use).replace(' ', '_')[:100] 
             debug_text_filename = f"debug_extracted_text_{safe_title}.txt"
             with open(debug_text_filename, "w", encoding="utf-8") as f_text:
                 f_text.write(full_text)
@@ -157,7 +194,7 @@ class VedicRetriever:
 
         logger.info(f"--- DEBUG: Sumário gerado para '{title_to_use}' ---")
         logger.info(f"Foco da query para sumarização: '{user_query}'")
-        logger.info(f"TEXTO DO SUMÁRIO GERADO:\n{summary}") # Este log é o mais importante agora
+        logger.info(f"TEXTO DO SUMÁRIO GERADO:\n{summary}")
         
         is_summary_useful = not (summary.startswith("Error:") or \
                              "contained little or no specific information" in summary.lower() or \
@@ -171,58 +208,101 @@ class VedicRetriever:
             logger.warning(f"Summarization of {article_url} (Title: {title_to_use}) was not useful or failed: {summary}")
             return {"url": article_url, "title": title_to_use, "summary": "[Summary not relevant or failed]"}
 
+    def _extract_search_term_from_query(self, user_query: str) -> str:
+        """
+        Extrai um termo de busca mais curto de uma user_query mais longa,
+        se a query parecer ser um pedido de definição. Caso contrário, retorna a query original.
+        """
+        extracted_term = None
+        # Padrões da mais específica para a mais geral
+        meaning_query_patterns = [
+            r"what is the meaning of the term\s+['\"]?([\w\s-]+)['\"]?",
+            r"what is the meaning of\s+['\"]?([\w\s-]+)['\"]?",
+            r"define the term\s+['\"]?([\w\s-]+)['\"]?",
+            r"define\s+['\"]?([\w\s-]+)['\"]?",
+        ]
+
+        for pattern in meaning_query_patterns:
+            match = re.search(pattern, user_query, re.IGNORECASE)
+            if match:
+                # Pega o último grupo capturado, que deve ser o termo
+                term_candidate = match.group(match.lastindex).strip()
+                term_candidate = term_candidate.strip("'\"") # Remove aspas
+                # Limita o número de palavras para evitar usar frases longas como termo
+                if 0 < len(term_candidate.split()) <= 3:
+                    extracted_term = term_candidate
+                    logger.info(f"Query sobre significado de termo. Query original: '{user_query}', Termo extraído para busca nos sites: '{extracted_term}'")
+                    return extracted_term
+        
+        logger.info(f"Nenhum termo específico extraído. Usando query original para busca nos sites: '{user_query}'")
+        return user_query # Retorna a query original se nenhum termo for extraído
+
 
     def _get_web_summaries_for_query(
-        self, 
-        user_query: str, 
+        self,
+        user_query: str,
         num_articles_to_process_per_site: int = 3
     ) -> List[Dict[str, Any]]:
         all_summaries_data: List[Dict[str, Any]] = []
-        search_term = user_query 
+        
+        search_term_for_sites = self._extract_search_term_from_query(user_query)
 
         tasks_for_executor = []
 
-        for site_url_from_config in TRUSTED_WEBSITES: 
+        for site_url_from_config in TRUSTED_WEBSITES:
             parsed_site_url = urlparse(site_url_from_config)
             domain_key = parsed_site_url.netloc.replace("www.", "")
 
             handler_method_name = self.site_search_handlers.get(domain_key)
             if not handler_method_name:
-                logger.warning(f"No search handler defined for domain: {domain_key}. Skipping web search for this site.")
+                logger.warning(f"Nenhum handler de busca definido para o domínio: {domain_key}. Pulando.")
                 continue
-            
-            if not hasattr(self.web_scraper, handler_method_name):
-                logger.error(f"Web scraper method '{handler_method_name}' for domain {domain_key} not found. Skipping.")
+
+            scraper_instance_to_use = self.static_web_scraper # Padrão
+            if domain_key in self.sites_requiring_dynamic_search: # Usa a lista definida no __init__
+                scraper_instance_to_use = self._get_dynamic_scraper()
+                logger.info(f"Usando scraper DINÂMICO para busca de resultados em {domain_key}")
+            else:
+                logger.info(f"Usando scraper ESTÁTICO para busca de resultados em {domain_key}")
+
+            if not hasattr(scraper_instance_to_use, handler_method_name): # Verifica na instância correta
+                logger.error(f"Método '{handler_method_name}' não encontrado na instância de {type(scraper_instance_to_use).__name__} para {domain_key}. Pulando.")
                 continue
-            
-            search_handler_func = getattr(self.web_scraper, handler_method_name)
-            logger.info(f"Preparing search on '{domain_key}' for term: '{search_term}' using {handler_method_name}")
+
+            search_handler_func = getattr(scraper_instance_to_use, handler_method_name)
+
+            logger.info(f"Preparando busca em '{domain_key}' para o termo: '{search_term_for_sites}' usando {handler_method_name} (scraper: {type(scraper_instance_to_use).__name__})")
             try:
-                articles_info = search_handler_func(search_term, num_articles_to_process_per_site)
+                articles_info = search_handler_func(search_term_for_sites, num_articles_to_process_per_site)
+
+                if articles_info is None:
+                    logger.warning(f"Handler de busca para '{domain_key}' retornou None para o termo '{search_term_for_sites}'. Esperava uma lista, tratando como sem resultados.")
+                    articles_info = [] 
+
                 for info in articles_info:
                     if info.get("url"):
                         tasks_for_executor.append(
                             (self._fetch_and_summarize_one_article, info["url"], user_query, info.get("title"))
                         )
                     else:
-                        logger.warning(f"Search result from {domain_key} missing 'url' key: {info.get('title', 'N/A')}")
+                        logger.warning(f"Resultado da busca de {domain_key} sem chave 'url': {info.get('title', 'N/A')}")
             except Exception as e:
-                logger.error(f"Error during initial search (getting links) on site '{domain_key}': {e}", exc_info=True)
+                logger.error(f"Erro durante busca inicial (obtenção de links) no site '{domain_key}': {e}", exc_info=True)
 
         if tasks_for_executor:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor: 
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_task_params = {executor.submit(func, *args): (func, args) for func, *args in tasks_for_executor}
                 for future in concurrent.futures.as_completed(future_to_task_params):
                     try:
                         summary_data = future.result()
-                        if summary_data: 
+                        if summary_data:
                             all_summaries_data.append(summary_data)
                     except Exception as e:
                         task_params = future_to_task_params[future]
-                        logger.error(f"Error processing article summary future for task {task_params}: {e}", exc_info=True)
+                        logger.error(f"Erro processando futuro de sumário de artigo para tarefa {task_params}: {e}", exc_info=True)
         
         useful_summaries = [s for s in all_summaries_data if s.get("summary") and not s["summary"].startswith("[")]
-        logger.info(f"Generated {len(useful_summaries)} useful web summaries for query '{user_query}'.")
+        logger.info(f"Gerados {len(useful_summaries)} sumários úteis da web para a query '{user_query}'.")
         return useful_summaries
 
     def answer_query_hybrid_rag(
@@ -232,12 +312,15 @@ class VedicRetriever:
         num_local_docs: int = TOP_K_RESULTS
     ) -> Dict[str, Any]:
         logger.info(f"Starting Hybrid RAG for query: '{user_query}' (Web articles per site: {num_web_articles_per_site}, Local docs: {num_local_docs})")
-        final_answer_text = "Could not generate an answer based on the available information." 
-        llm_failed = True 
+        
+        web_summaries_data = []
+        try:
+            web_summaries_data = self._get_web_summaries_for_query(user_query, num_web_articles_per_site)
+        finally:
+            # Garante que o driver do Selenium seja fechado após a busca na web, se foi usado.
+            self._shutdown_dynamic_scraper()
+
         all_source_details: List[Dict[str, Any]] = []
-        
-        web_summaries_data = self._get_web_summaries_for_query(user_query, num_web_articles_per_site)
-        
         for summary_d in web_summaries_data:
             all_source_details.append({
                 "type": "web_summary",
@@ -248,17 +331,13 @@ class VedicRetriever:
 
         local_docs = self.retrieve_documents_from_local_vs(user_query, k=num_local_docs)
         logger.info(f"Retrieved {len(local_docs)} local documents for query '{user_query}'.")
-        for i, doc_content in enumerate(local_docs): # Enhanced logging
+        for i, doc_content in enumerate(local_docs):
             logger.debug(f"Local Doc {i+1} Metadata: {doc_content.metadata}") 
             logger.debug(f"Local Doc {i+1} Content (first 300 chars): {doc_content.page_content[:300]}")
         
         for doc in local_docs:
             source_file = doc.metadata.get("source", "N/A")
-            if os.path.exists(source_file): 
-                source_display = os.path.basename(source_file)
-            else:
-                source_display = source_file
-
+            source_display = os.path.basename(source_file) if os.path.exists(source_file) else source_file
             all_source_details.append({
                 "type": "local_document_chunk",
                 "source_file": source_display,
@@ -278,13 +357,10 @@ class VedicRetriever:
 
         rag_answer_text = ""
         llm_fallback_used = False
-        rag_sources = all_source_details # all_source_details é construído antes
+        rag_sources = all_source_details 
 
-        if not context_parts: # Se não há contexto RAG
+        if not context_parts:
             logger.warning(f"No context generated from web or local search for query: '{user_query}'. Attempting direct LLM query.")
-            # Não há necessidade de chamar o LLM com contexto vazio aqui, faremos isso no fallback abaixo.
-            # rag_answer_text = "I could not find sufficient information from web searches or local documents to answer your question." # Mensagem padrão
-            # Simula uma resposta RAG que indica falha para acionar o fallback
             rag_answer_text = "No information found in RAG context." 
         else:
             final_context = "\n\n---\n\n".join(context_parts)
@@ -300,9 +376,6 @@ class VedicRetriever:
                                         Provide a clear, concise, and well-structured answer based *only* on the information given below.
                                         If you cannot answer, explicitly say so."""
             
-            # Salvar o contexto final para depuração (como antes)
-            # ... (código para salvar debug_final_context_...txt) ...
-
             try:
                 logger.debug(f"Calling LLM Interface (RAG attempt). User Query: '{user_query}'. Context Length: {len(final_context)}")
                 rag_answer_text = self.llm_interface.generate_response(
@@ -315,63 +388,43 @@ class VedicRetriever:
                 logger.error(f"LLM generation failed for hybrid RAG query '{user_query}': {e}", exc_info=True)
                 rag_answer_text = "An error occurred while generating the answer using RAG."
 
-        # Critérios para decidir se a resposta RAG foi "ruim" ou "não encontrada"
-        # Ajuste estas frases conforme as respostas típicas do seu LLM quando ele não encontra
         failure_indicators = [
-            "i am sorry, but",
-            "i cannot answer",
-            "does not contain information",
-            "no information found",
-            "unable to find specific information",
-            "do not contain sufficient information",
-            "documents do not contain specific information",
-            "no information found in rag context" # Adicionado para o caso de não haver contexto RAG
+            "i am sorry, but", "i cannot answer", "does not contain information",
+            "no information found", "unable to find specific information",
+            "do not contain sufficient information", "documents do not contain specific information",
+            "no information found in rag context"
         ]
-
-        # Verifica se a resposta do RAG indica falha
         rag_failed_to_answer = any(indicator in rag_answer_text.lower() for indicator in failure_indicators) or \
                                rag_answer_text.startswith("Error:") or \
-                               not rag_answer_text.strip() # Resposta vazia também é falha
+                               not rag_answer_text.strip()
 
         final_answer_to_user = rag_answer_text
 
         if rag_failed_to_answer:
             logger.warning(f"RAG system could not answer or provided an insufficient answer for '{user_query}'. Attempting direct LLM query without RAG context.")
-            
             system_instruction_direct = f"""You are a knowledgeable Vedic scholar and AI assistant. 
                                             Answer the following question to the best of your ability based on your general knowledge.
                                             User's question: '{user_query}'
-                                            Provide a comprehensive and informative answer. If you do not know the answer, simply state that you do not have that information.
-                                            """
+                                            Provide a comprehensive and informative answer. If you do not know the answer, simply state that you do not have that information."""
             try:
                 direct_llm_answer = self.llm_interface.generate_response(
                     prompt=user_query,
-                    context=None,  # SEM CONTEXTO RAG
+                    context=None,
                     system_prompt=system_instruction_direct
                 )
                 logger.info(f"Direct LLM response for query '{user_query}' (first 200 chars): {direct_llm_answer[:200]}")
-                
-                # Você pode decidir como apresentar essa resposta de fallback.
-                # Ex: prefixar com uma mensagem ou usá-la diretamente.
                 final_answer_to_user = f"[Answer from general knowledge as RAG context was insufficient]:\n{direct_llm_answer}"
-                # Ou, se a resposta RAG foi apenas um "não sei", substitua completamente:
-                # final_answer_to_user = direct_llm_answer
-
                 llm_fallback_used = True
-                rag_sources = [] # Limpa as fontes RAG, já que não foram usadas para a resposta final.
-                                # Ou você pode querer manter as fontes RAG e adicionar uma nota de que elas não foram úteis.
+                rag_sources = [] 
             except Exception as e:
                 logger.error(f"Direct LLM query also failed for query '{user_query}': {e}", exc_info=True)
-                final_answer_to_user = rag_answer_text # Mantém a resposta original do RAG (que já era de falha)
-                # Ou uma mensagem de erro mais genérica:
-                # final_answer_to_user = "I encountered an issue trying to answer your question through both RAG and direct query."
+                # final_answer_to_user remains rag_answer_text (which indicated failure)
 
         return {
             "answer": final_answer_to_user,
-            "sources": rag_sources, # Fontes do RAG (podem estar vazias se o fallback foi usado e você as limpou)
+            "sources": rag_sources,
             "llm_fallback_used": llm_fallback_used 
         }
-
 
     def answer_query_from_local_rag(self, query: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         logger.info(f"Answering query '{query}' using ONLY local VectorStore and filter: {filter_dict}")
@@ -392,8 +445,7 @@ class VedicRetriever:
         sources_metadata = []
         for doc in retrieved_docs:
             source_file = doc.metadata.get("source", "N/A")
-            if os.path.exists(source_file): source_display = os.path.basename(source_file)
-            else: source_display = source_file
+            source_display = os.path.basename(source_file) if os.path.exists(source_file) else source_file
             sources_metadata.append({
                 "source_file": source_display, 
                 "title": doc.metadata.get("title", "N/A"), 
@@ -401,3 +453,20 @@ class VedicRetriever:
                 "url": doc.metadata.get("url") 
             })
         return {"answer": answer, "sources": sources_metadata, "documents": [], "llm_fallback_used": llm_failed}
+
+    def _get_dynamic_scraper(self) -> DynamicVedicScraper:
+        """Inicializa e retorna a instância do DynamicVedicScraper de forma preguiçosa."""
+        if self._dynamic_web_scraper_instance is None:
+            logger.info("VedicRetriever: Inicializando instância do DynamicVedicScraper.")
+            # Usa cache_dir e request_delay do static_scraper para consistência
+            cache_dir = self.static_web_scraper.cache_manager.cache_dir 
+            request_delay = self.static_web_scraper.request_delay 
+            self._dynamic_web_scraper_instance = DynamicVedicScraper(cache_dir=cache_dir, request_delay=request_delay)
+        return self._dynamic_web_scraper_instance
+
+    def _shutdown_dynamic_scraper(self):
+        """Fecha o driver do Selenium se a instância do DynamicVedicScraper foi utilizada."""
+        if self._dynamic_web_scraper_instance:
+            logger.info("VedicRetriever: Solicitando fechamento da instância do DynamicVedicScraper.")
+            self._dynamic_web_scraper_instance._close_driver()
+            self._dynamic_web_scraper_instance = None

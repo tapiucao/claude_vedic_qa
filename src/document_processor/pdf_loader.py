@@ -1,19 +1,18 @@
-# src/document_processor/pdf_loader.py
+
 """
 PDF processing for Vedic Knowledge AI.
 Handles loading, metadata extraction, and content processing for PDF files.
 """
 import os
 import logging
-from typing import List, Dict, Any, Optional, Sequence # Added Sequence
+from typing import List, Dict, Any, Optional, Union 
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_core.documents import Document # Use core Document
+from langchain_core.documents import Document
 from tqdm import tqdm
 import re
 
-# Use PyMuPDF (fitz) for faster metadata extraction if available
 try:
-    import fitz # PyMuPDF
+    import fitz 
     HAS_PYMUPDF = True
 except ImportError:
     HAS_PYMUPDF = False
@@ -248,7 +247,6 @@ class VedicPDFLoader:
                     logger.warning(f"Regex pattern '{pattern}' matched but failed to extract integer.")
                     continue # Try next pattern if extraction failed
 
-        # Check for verse/text reference patterns (independent of chapter finding)
         # Look for patterns like "Verse X", "Text Y", "BG X.Y", "SB X.Y.Z"
         # Prioritize more specific patterns (like book references)
         verse_patterns = [

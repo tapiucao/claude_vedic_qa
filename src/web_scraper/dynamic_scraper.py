@@ -5,11 +5,10 @@ Uses Selenium to handle JavaScript-rendered content for Vedic Knowledge AI.
 """
 import logging
 import time
-from typing import Dict, List, Any, Optional
-# Import specific Selenium exceptions
+from typing import List, Any, Optional, Tuple
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions # Renamed to avoid conflict
-from selenium.webdriver.chrome.service import Service as ChromeService # Renamed to avoid conflict
+from selenium.webdriver.chrome.options import Options as ChromeOptions 
+from selenium.webdriver.chrome.service import Service as ChromeService 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -18,16 +17,13 @@ from selenium.common.exceptions import (
     ElementNotInteractableException, StaleElementReferenceException
 )
 from webdriver_manager.chrome import ChromeDriverManager
-# Removed unused BeautifulSoup import
 from langchain.docstore.document import Document
 
-from ..config import REQUEST_DELAY, WEB_CACHE_DIR # Added WEB_CACHE_DIR
-from ..document_processor.text_splitter import VedicTextSplitter
-from ..document_processor.sanskrit_processor import SanskritProcessor
+from ..config import REQUEST_DELAY, WEB_CACHE_DIR 
 from .scraper import VedicWebScraper
-from .cache_manager import WebCacheManager # Import CacheManager
+from .ethics import is_scraping_allowed
+from urllib.parse import urljoin, urlparse, quote_plus
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
 class DynamicVedicScraper(VedicWebScraper):
@@ -39,9 +35,6 @@ class DynamicVedicScraper(VedicWebScraper):
         # Initialize superclass (which initializes cache_manager, etc.)
         super().__init__(request_delay=request_delay, cache_dir=cache_dir)
         self.driver: Optional[webdriver.Chrome] = None # Type hint for driver
-        # These are already initialized in the superclass, no need to redo
-        # self.text_splitter = VedicTextSplitter()
-        # self.sanskrit_processor = SanskritProcessor()
 
         logger.info("Initialized dynamic web scraper")
 
@@ -60,9 +53,6 @@ class DynamicVedicScraper(VedicWebScraper):
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--window-size=1920,1080")
-            # Use User-Agent from superclass headers
-           # Em src/web_scraper/dynamic_scraper.py, dentro de _initialize_driver(self)
-            # Use User-Agent from superclass session headers
             if hasattr(self, 'session') and self.session.headers.get('User-Agent'):
                 chrome_options.add_argument(f"user-agent={self.session.headers['User-Agent']}")
             else:
@@ -70,8 +60,6 @@ class DynamicVedicScraper(VedicWebScraper):
                 logger.warning("User-Agent from session headers not found, using a default User-Agent for WebDriver.")
                 chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36 VedicKnowledgeBot/1.0_Dynamic")
 
-            # Install or update ChromeDriver automatically
-            # Use context manager for Service object if possible, though not standard
             service = ChromeService(ChromeDriverManager().install())
 
             # Initialize the driver
@@ -99,8 +87,6 @@ class DynamicVedicScraper(VedicWebScraper):
             finally:
                 self.driver = None # Ensure driver is set to None
 
-
-    # Removed __del__ method - rely on explicit closing or context manager pattern if used externally
 
     # Overriding fetch_url to use Selenium
     def fetch_url(self, url: str, bypass_cache: bool = False, wait_time: int = 10, scroll: bool = True) -> Optional[str]:
@@ -353,7 +339,89 @@ class DynamicVedicScraper(VedicWebScraper):
              logger.error(f"Unexpected error extracting links from {url}: {str(e)}")
              return []
 
-# Need to import is_scraping_allowed from ethics
-from .ethics import is_scraping_allowed
-# Need to import urljoin from urllib.parse
-from urllib.parse import urljoin, urlparse
+    def search_vedabase(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
+        start_index = (page_number - 1) * 10
+        search_url = f"https://vedabase.io/en/search/?query={quote_plus(query_term)}&start={start_index}"
+        logger.info(f"DynamicVedicScraper: Iniciando busca DINÂMICA em vedabase.io: {search_url}")
+
+        self._initialize_driver() # Garante que o driver está pronto
+        if not self.driver:
+            logger.error("DynamicVedicScraper: Driver não inicializado para busca no vedabase.io.")
+            return None, search_url
+
+        html_content = None
+        actual_search_url_after_load = search_url
+        try:
+            # A linha abaixo usa o self.fetch_url DESTA CLASSE (DynamicVedicScraper), que é baseado em Selenium.
+            html_content = self.fetch_url(search_url, bypass_cache=True, wait_time=15, scroll=True)
+            actual_search_url_after_load = self.driver.current_url if self.driver else search_url
+
+            if html_content or self.driver: # Added self.driver check for safety
+                # The selector for an INDIVIDUAL search result item.
+                # From your screenshot, it's a div with class "search-result" and "em:mb-4"
+                # Using a CSS selector is safer for classes with special characters or multiple parts.
+                individual_result_selector = "div.search-result.em\\:mb-4" # Escaping the colon for CSS selector
+                # Or, more simply, if "search-result" is unique enough for these items:
+                # individual_result_selector = "div.search-result"
+
+                logger.info(f"DynamicVedicScraper: Aguardando por elementos com SELETOR CSS '{individual_result_selector}' no vedabase.io...")
+                results_loaded = self.wait_for_element(selector=individual_result_selector, by=By.CSS_SELECTOR, wait_time=25) # Increased wait time
+
+                if results_loaded:
+                    logger.info(f"DynamicVedicScraper: Elemento(s) '{individual_result_selector}' encontrado(s). Obtendo HTML final.")
+                    html_content = self.driver.page_source # Get the page source again AFTER elements are loaded
+                else:
+                    logger.warning(f"DynamicVedicScraper: Elemento(s) '{individual_result_selector}' NÃO encontrado(s) em {actual_search_url_after_load} para vedabase.io.")
+                    # Save debug HTML if results still not found
+                    if self.driver:
+                        failed_html_path = f"vedabase_DYNAMIC_FAIL_debug_output_{quote_plus(query_term)}_page{page_number}.html"
+                        try:
+                            with open(failed_html_path, "w", encoding="utf-8") as f_debug:
+                                f_debug.write(self.driver.page_source)
+                            logger.info(f"Saved DYNAMIC FAIL debug HTML to '{failed_html_path}'")
+                        except Exception as e_save_debug:
+                            logger.error(f"Error saving DYNAMIC FAIL debug HTML: {e_save_debug}")
+        except Exception as e:
+            logger.error(f"DynamicVedicScraper: Erro durante busca dinâmica no vedabase.io: {e}", exc_info=True)
+            if self.driver:
+                try: html_content = self.driver.page_source
+                except: pass
+        # Não feche o driver aqui, o VedicRetriever gerenciará
+        return html_content, actual_search_url_after_load
+
+    def search_purebhakti(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
+        base_site_url = "https://www.purebhakti.com/"
+        search_path_with_query = f"resources/search?q={quote_plus(query_term)}"
+        search_url = urljoin(base_site_url, search_path_with_query)
+
+        logger.info(f"DynamicVedicScraper: Iniciando busca DINÂMICA em purebhakti.com: {search_url}")
+
+        self._initialize_driver() # Garante que o driver está pronto
+        if not self.driver:
+            logger.error("DynamicVedicScraper: Driver não inicializado para busca no purebhakti.com.")
+            return None, search_url
+
+        html_content = None
+        final_url_of_search_results = search_url
+        try:
+            # A linha abaixo usa o self.fetch_url DESTA CLASSE (DynamicVedicScraper), que é baseado em Selenium.
+            html_content = self.fetch_url(search_url, bypass_cache=True, wait_time=15, scroll=True) 
+            final_url_of_search_results = self.driver.current_url if self.driver else search_url
+
+            if html_content:
+                # Após fetch_url, aguarda o elemento específico dos resultados
+                results_loaded = self.wait_for_element(selector="search-result-list", by=By.ID, wait_time=20)
+                if results_loaded:
+                    logger.info("DynamicVedicScraper: Contêiner 'ul#search-result-list' (purebhakti) encontrado. Obtendo HTML final.")
+                    html_content = self.driver.page_source # Pega o HTML novamente após o elemento aparecer
+                else:
+                    logger.warning(f"DynamicVedicScraper: Timeout/elemento 'ul#search-result-list' (purebhakti) não encontrado. HTML obtido pode não ter resultados.")
+            else:
+                logger.warning(f"DynamicVedicScraper: fetch_url não retornou HTML para purebhakti.com.")
+        except Exception as e:
+            logger.error(f"DynamicVedicScraper: Erro na busca dinâmica em purebhakti.com: {e}", exc_info=True)
+            if self.driver:
+                try: html_content = self.driver.page_source
+                except: pass # Ignora erro se driver já estiver ruim
+        # Não feche o driver aqui, o VedicRetriever gerenciará
+        return html_content, final_url_of_search_results

@@ -82,39 +82,30 @@ SITE_SPECIFIC_SCRAPING_CONFIG = {
         }
     },
     "vedabase.io": {
-        "content_selectors": ["div#content"],
-        "elements_to_remove_selectors": [
-            "div.r-lang-selection", "div.r-utils", "div.r-toc-title", "div.r-toc",
-            "div.r-search", "div.noprint", "div.r-book-title",
-            ".r-synonyms-title", ".r-translation-title", ".r-purport-title"
+        "content_selectors": [
+            # Attempt 1: Most specific to what image_b7f6ea.jpg shows for the paragraph container
+            "div.text-justify.copy.user-select-text", 
+            # Attempt 2: Slightly less specific from image_b7f6ea.jpg
+            "div.text-justify.copy",
+            # Attempt 3: From your previous successful screenshot image_b6a1ae.jpg (overall content area)
+            "main > div.grow.text-justify", 
+            # Fallback to the original general selector
+            "div#content"  
         ],
-        "title_selector": "div.r-title > h1",
-        "custom_content_assembly": True,
+        "elements_to_remove_selectors": [], # CRITICAL: Keep this EMPTY for this test
+        "title_selector": "div.r-title > h1", 
+        "custom_content_assembly": True, 
         "verse_selector": "div.r-verse",
         "synonyms_selector": "div.r-synonyms",
         "translation_selector": "div.r-translation",
-        "purport_selector": "div.r-paragraph", # Selects all paragraphs for purport
+        "purport_selector": "div.r-paragraph", 
         "metadata_selectors": {
             "text_reference": {"selector": "div.r-title > h1"},
             "chapter_info": {"selector": "div.r-title-small > a"},
         }
     },
-    "bhaktivedantavediclibrary.org": {
-        "content_selectors": ["article div.entry-content", "div.td-post-content"],
-        "elements_to_remove_selectors": [
-            ".td-post-sharing-bottom", ".td-post-next-prev", "div#comments",
-            ".td-category", ".td-module-meta-info", "p > em > strong",
-            "div.td-post-featured-image", "figure.wp-block-image",
-        ],
-        "title_selector": "h1.entry-title",
-         "metadata_selectors": {
-            "article_date": {"selector": "time.entry-date.updated", "attribute": "datetime"},
-            "author": {"selector": ".td-post-author-name a"},
-        }
-    }
-    # Adicione configurações para outros TRUSTED_WEBSITES aqui
-}
 
+}
 
 # --- Cloud Storage Configuration (sem alterações) ---
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
