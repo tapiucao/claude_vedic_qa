@@ -167,12 +167,7 @@ class VedicRetriever:
 
         full_text = parsed_article["text"]
         title_to_use = article_title or parsed_article.get("title", article_url)
-
-        logger.info(f"--- DEBUG: Texto extraído de '{title_to_use}' (URL: {article_url}) ---")
-        logger.info(f"Comprimento do texto: {len(full_text)} caracteres")
-        logger.debug(f"Amostra do texto extraído (primeiros 1500 caracteres):\n{full_text[:1500]}")
-        logger.debug(f"Amostra do texto extraído (últimos 500 caracteres):\n{full_text[-500:]}")
-
+        
         try:
             safe_title = re.sub(r'[^\w\-. ]', '_', title_to_use).replace(' ', '_')[:100] 
             debug_text_filename = f"debug_extracted_text_{safe_title}.txt"
@@ -193,8 +188,6 @@ class VedicRetriever:
         )
 
         logger.info(f"--- DEBUG: Sumário gerado para '{title_to_use}' ---")
-        logger.info(f"Foco da query para sumarização: '{user_query}'")
-        logger.info(f"TEXTO DO SUMÁRIO GERADO:\n{summary}")
         
         is_summary_useful = not (summary.startswith("Error:") or \
                              "contained little or no specific information" in summary.lower() or \
@@ -402,7 +395,7 @@ class VedicRetriever:
 
         if rag_failed_to_answer:
             logger.warning(f"RAG system could not answer or provided an insufficient answer for '{user_query}'. Attempting direct LLM query without RAG context.")
-            system_instruction_direct = f"""You are a knowledgeable Vedic scholar and AI assistant. 
+            system_instruction_direct = f"""You are a knowledgeable Gaudiya vaisnava scholar and AI assistant specialized in the Bhaktivinoda Thakur parivara teachings. 
                                             Answer the following question to the best of your ability based on your general knowledge.
                                             User's question: '{user_query}'
                                             Provide a comprehensive and informative answer. If you do not know the answer, simply state that you do not have that information."""

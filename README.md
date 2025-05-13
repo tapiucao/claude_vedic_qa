@@ -1,823 +1,657 @@
 # Vedic Knowledge AI System
 
-A comprehensive AI-powered knowledge base for Gaudiya Math bhakti and Vedic scriptures, designed to understand, retrieve, and provide answers about Sanskrit terminology, verses, and philosophical concepts from Vedic literature.
+Um sistema de conhecimento abrangente alimentado por IA para bhakti Gaudiya Math e escrituras védicas, projetado para entender, recuperar e fornecer respostas sobre terminologia sânscrita, versos e conceitos filosóficos da literatura védica.
 
-## Table of Contents
+## Índice
 
-1. [System Overview](#system-overview)
-2. [System Architecture](#system-architecture)
-3. [Directory Structure](#directory-structure)
-4. [Installation and Setup](#installation-and-setup)
-5. [Usage Guide](#usage-guide)
-   - [Command Line Interface](#command-line-interface)
-   - [Interactive Mode](#interactive-mode)
-   - [API Server](#api-server)
-6. [Adding Content](#adding-content)
-7. [Web Scraping](#web-scraping)
-8. [Export Features](#export-features)
-9. [Customization](#customization)
-10. [Troubleshooting](#troubleshooting)
-11. [Advanced Features](#advanced-features)
-12. [Cloud Deployment](#cloud-deployment)
+1.  [Visão Geral do Sistema](#visao-geral-do-sistema)
+2.  [Arquitetura do Sistema](#arquitetura-do-sistema)
+3.  [Estrutura de Diretórios](#estrutura-de-diretorios)
+4.  [Instalação e Configuração](#instalacao-e-configuracao)
+5.  [Guia de Uso](#guia-de-uso)
+    * [Interface de Linha de Comando](#interface-de-linha-de-comando)
+    * [Modo Interativo](#modo-interativo)
+    * [Servidor de API](#servidor-de-api)
+6.  [Adicionando Conteúdo](#adicionando-conteudo)
+7.  [Web Scraping](#web-scraping)
+8.  [Recursos de Exportação](#recursos-de-exportacao)
+9.  [Personalização](#personalizacao)
+10. [Solução de Problemas](#solucao-de-problemas)
+11. [Recursos Avançados](#recursos-avancados)
+12. [Implantação na Nuvem](#implantacao-na-nuvem)
+13. [Funcionalidades de Capítulo](#funcionalidades-de-capitulo)
 
-## System Overview
+## Visão Geral do Sistema
 
-Vedic Knowledge AI is a specialized system for working with Vedic scriptures and Gaudiya Math texts. The system offers:
+O Vedic Knowledge AI é um sistema especializado para trabalhar com escrituras védicas e textos Gaudiya Math. O sistema oferece:
 
-- **Natural Language Q&A**: Ask questions about Vedic concepts and receive detailed, sourced answers
-- **Sanskrit Term Explanations**: Get comprehensive explanations of Sanskrit terms with etymologies
-- **Verse Interpretations**: Explore the meanings and interpretations of verses from Vedic scriptures
-- **Intelligent Web Scraping**: Ethically collect and integrate knowledge from trusted websites
-- **Export Capabilities**: Generate dictionaries, reports, and Q&A logs for further study
-- **Multiple Interfaces**: Command-line, interactive, and API access options
+* **Q&A em Linguagem Natural**: Faça perguntas sobre conceitos védicos e receba respostas detalhadas e com fontes.
+* **Explicações de Termos em Sânscrito**: Obtenha explicações abrangentes de termos em sânscrito com etimologias.
+* **Interpretações de Versos**: Explore os significados e interpretações de versos das escrituras védicas.
+* **Web Scraping Inteligente**: Colete e integre eticamente conhecimento de sites confiáveis.
+* **Capacidades de Exportação**: Gere dicionários, relatórios e logs de Q&A para estudo posterior.
+* **Múltiplas Interfaces**: Opções de acesso por linha de comando, interativo e API.
 
-## System Architecture
+## Arquitetura do Sistema
 
-The system is built around these core components:
+O sistema é construído em torno destes componentes principais:
 
-- **Document Processing**: Handles PDF ingestion and text structuring
-- **Knowledge Base**: Vector store for efficient retrieval of relevant content
-- **QA System**: Combines retrieval and language models for accurate answers
-- **Web Scraper**: Ethically collects data from trusted sources with caching
-- **Export System**: Generates structured exports in multiple formats
+* **Processamento de Documentos**: Lida com a ingestão de PDFs e estruturação de texto. Inclui processamento específico para sânscrito.
+* **Base de Conhecimento**: Repositório vetorial (ChromaDB) para recuperação eficiente de conteúdo relevante, utilizando modelos de embedding configuráveis.
+* **Sistema de Q&A**: Combina recuperação de informações (RAG) com modelos de linguagem generativa (Gemini) para respostas precisas, incluindo gerenciamento de citações.
+* **Web Scraper**: Coleta dados de fontes confiáveis de forma ética, com gerenciamento de cache e capacidade de lidar com sites estáticos e dinâmicos (baseados em JavaScript). Inclui um agendador para atualizações periódicas.
+* **Sistema de Exportação**: Gera exportações estruturadas em múltiplos formatos (JSON, Markdown, CSV).
+* **Utilitários**: Inclui logging, sincronização com armazenamento em nuvem (AWS, GCP, Azure) e outras ferramentas de suporte.
 
-## Directory Structure
+## Estrutura de Diretórios
 
-```
 vedic-knowledge-ai/
-├── .env                        # Environment variables
-├── requirements.txt            # Dependencies
-├── README.md                   # Project documentation
-├── app.py                      # Main application file
-├── api.py                      # API interface
-├── docker-compose.yml          # For containerization
-├── Dockerfile                  # For containerization
+├── .env                        # Variáveis de ambiente
+├── requirements.txt            # Dependências
+├── README.md                   # Documentação do projeto
+├── app.py                      # Arquivo principal da aplicação (CLI e lógica central)
+├── api.py                      # Interface da API (FastAPI)
+├── docker-compose.yml          # Para conteinerização com ChromaDB
+├── Dockerfile                  # Para conteinerização da aplicação
 ├── data/
-│   ├── books/                  # PDF storage
-│   │   └── [your_pdfs_here]    # Place PDFs here
-│   ├── db/                     # Vector database storage
-│   ├── exports/                # Generated exports
-│   │   ├── qa_logs/            # Question-answer records
-│   │   ├── reports/            # System reports
-│   │   └── summaries/          # Text summaries
-│   ├── web_cache/              # Cached web content
-│   │   └── metadata.json       # Cache metadata
-│   └── temp/                   # Temporary processing
+│   ├── books/                  # Armazenamento de PDFs
+│   │   └── [seus_pdfs_aqui]    # Coloque os PDFs aqui
+│   ├── db_new/                 # Armazenamento do banco de dados vetorial (ChromaDB)
+│   ├── exports/                # Exportações geradas
+│   │   ├── qa_logs/            # Registros de perguntas e respostas
+│   │   ├── reports/            # Relatórios do sistema
+│   │   └── summaries/          # Resumos de texto e dicionários
+│   ├── web_cache/              # Conteúdo web em cache
+│   │   └── metadata.json       # Metadados do cache
+│   └── temp/                   # Processamento temporário
 └── src/
-    ├── config.py               # Configuration settings
-    ├── document_processor/     # PDF and text processing
-    │   ├── pdf_loader.py       # PDF loading
-    │   ├── text_splitter.py    # Text chunking
-    │   └── sanskrit_processor.py # Sanskrit handling
-    ├── knowledge_base/         # Vector database
-    │   ├── vector_store.py     # Vector database operations
-    │   ├── embeddings.py       # Embedding models
-    │   └── prompt_templates.py # Specialized prompts
-    ├── qa_system/              # QA functionality
-    │   ├── llm_interface.py    # LLM integration
-    │   ├── retriever.py        # Document retrieval
-    │   └── citation.py         # Source attribution
-    ├── web_scraper/            # Web scraping
-    │   ├── scraper.py          # Basic scraper
-    │   ├── dynamic_scraper.py  # JavaScript handler
-    │   ├── scheduler.py        # Scheduled scraping
-    │   ├── cache_manager.py    # Web content caching
-    │   └── ethics.py           # Ethical scraping rules
-    └── utils/                  # Utilities
-        ├── exporter.py         # Export functionality
-        ├── logger.py           # Logging setup
-        └── cloud_sync.py       # Cloud storage sync
-```
+├── config.py               # Configurações (paths, chaves de API, parâmetros de LLM)
+├── document_processor/     # Processamento de PDFs e texto
+│   ├── init.py
+│   ├── pdf_loader.py       # Carregamento de PDFs
+│   ├── text_splitter.py    # Divisão de texto em chunks
+│   └── sanskrit_processor.py # Manipulação de sânscrito
+├── knowledge_base/         # Banco de dados vetorial
+│   ├── init.py
+│   ├── vector_store.py     # Operações do banco de dados vetorial (ChromaDB)
+│   ├── embeddings.py       # Modelos de embedding (HuggingFace)
+│   └── prompt_templates.py # Prompts especializados para o LLM
+├── qa_system/              # Funcionalidade de Q&A
+│   ├── init.py
+│   ├── gemini_interface.py # Integração com LLM Gemini
+│   ├── retriever.py        # Recuperação de documentos (RAG local e híbrido)
+│   └── citation.py         # Atribuição de fontes
+├── web_scraper/            # Web scraping
+│   ├── init.py
+│   ├── scraper.py          # Scraper básico (requests)
+│   ├── dynamic_scraper.py  # Manipulador de JavaScript (Selenium)
+│   ├── scheduler.py        # Agendamento de scraping
+│   ├── cache_manager.py    # Cache de conteúdo web
+│   └── ethics.py           # Regras éticas de scraping
+├── utils/                  # Utilitários
+│   ├── init.py
+│   ├── exporter.py         # Funcionalidade de exportação
+│   ├── logger.py           # Configuração de logging
+│   └── cloud_sync.py       # Sincronização com armazenamento em nuvem
+└── test_gemini_api.py      # Script de teste para a API Gemini
 
-## Installation and Setup
 
-### Prerequisites
+## Instalação e Configuração
 
-- Python 3.9+
-- At least 8GB RAM recommended
-- OpenAI API key
+### Pré-requisitos
 
-### Step 1: Clone or Create the Directory Structure
+* Python 3.9+
+* Pelo menos 8GB de RAM recomendado
+* Chave de API do Google Gemini (Generative Language API)
+* Docker e Docker Compose (para usar o ChromaDB como um serviço separado)
 
-Create the project folder structure as shown above or clone the repository:
+### Passo 1: Clonar ou Criar a Estrutura de Diretórios
+
+Crie a estrutura de pastas do projeto como mostrado acima ou clone o repositório:
 
 ```bash
-git clone https://github.com/yourusername/vedic-knowledge-ai.git
+git clone [https://github.com/seuusuario/vedic-knowledge-ai.git](https://github.com/seuusuario/vedic-knowledge-ai.git)
 cd vedic-knowledge-ai
-```
+Passo 2: Instalar Dependências
+Bash
 
-### Step 2: Install Dependencies
-
-```bash
 pip install -r requirements.txt
-```
+Pode ser necessário instalar o chromedriver manualmente ou garantir que ele esteja no seu PATH se o webdriver-manager não conseguir configurá-lo automaticamente para o DynamicScraper.
 
-### Step 3: Configure Environment Variables
+Passo 3: Configurar Variáveis de Ambiente
+Crie um arquivo .env na raiz do projeto e adicione sua configuração:
 
-Create a `.env` file in the project root and add your configuration:
+Code snippet
 
-```
 # API Keys
-GEMINI_API_KEY='AIzaSyDuLhEqJMWWtTseYm7V5KouXJ-605afKxY'
+GEMINI_API_KEY='SUA_CHAVE_API_GEMINI_AQUI'
 
-# Directories
+# Directories (geralmente não precisam ser alterados se usar a estrutura padrão)
 PDF_DIR=./data/books
 DB_DIR=./data/db_new
 EXPORT_DIR=./data/exports
 WEB_CACHE_DIR=./data/web_cache
+TEMP_DIR=./data/temp
 
 # LLM Configuration
-MODEL_NAME=gpt-4
+MODEL_NAME="gemini-1.5-flash" # ou "gemini-1.5-pro", etc.
 TEMPERATURE=0.2
 MAX_TOKENS=2048
 
-# Web Scraper
-SCRAPING_INTERVAL=86400  # 24 hours in seconds
-REQUEST_DELAY=5  # 5 seconds between requests
-```
+# Vector Database Configuration
+CHUNK_SIZE=1000
+CHUNK_OVERLAP=200
+TOP_K_RESULTS=5 # Para busca local no VectorStore
+EMBEDDING_MODEL="sentence-transformers/all-mpnet-base-v2" # Mantenha consistência com o DB existente
 
-### Step 4: Initialize the System
+# Web Scraping Configuration
+SCRAPING_INTERVAL=86400 # Diariamente
+REQUEST_DELAY=5 # Segundos
+TRUSTED_WEBSITES="[https://www.purebhakti.com](https://www.purebhakti.com),[https://vedabase.io/en/](https://vedabase.io/en/)" # Sites confiáveis para scraping
 
-Run the initialization command to set up the directory structure:
+# Logging Configuration
+LOG_LEVEL="INFO"
+# LOG_FILE=./data/vedic_knowledge_ai.log # O logger.py geralmente lida com isso
 
-```bash
+# Cloud Storage (opcional, descomente e preencha se for usar)
+# AWS_ACCESS_KEY_ID=
+# AWS_SECRET_ACCESS_KEY=
+# AWS_REGION=us-east-1
+# S3_BUCKET=
+# GCP_PROJECT_ID=
+# GCP_BUCKET_NAME=
+# AZURE_STORAGE_CONNECTION_STRING=
+# AZURE_CONTAINER_NAME=
+
+# ChromaDB (se estiver usando docker-compose.yml para o ChromaDB)
+CHROMA_HOST=chroma # Nome do serviço no docker-compose
+CHROMA_PORT=8001
+Passo 4: Configurar o ChromaDB (Banco de Dados Vetorial)
+Recomenda-se usar o Docker Compose para executar o ChromaDB como um serviço separado para persistência e gerenciamento mais fácil.
+
+Bash
+
+docker-compose up -d chroma
+Isso iniciará o serviço ChromaDB e o manterá em execução em segundo plano. A aplicação (vedic-knowledge-ai) se conectará a ele conforme configurado no docker-compose.yml e no .env.
+
+Se preferir executar o ChromaDB localmente (persistência no sistema de arquivos, sem Docker para o DB), certifique-se de que CHROMA_HOST e CHROMA_PORT não estejam definidos no .env para que ele use o DB_DIR.
+
+Passo 5: Inicializar o Sistema (Opcional, mas bom para criar pastas)
+Execute o comando de inicialização para configurar a estrutura de diretórios, se ainda não existir:
+
+Bash
+
 python app.py init
-```
+Passo 6: Adicionar Seus Documentos PDF
+Coloque seus PDFs védicos e Gaudiya Math no diretório data/books. Você pode organizá-los em subdiretórios, se desejar.
 
-### Step 5: Add Your PDF Documents
+Passo 7: Carregar Documentos no Sistema
+Bash
 
-Place your Vedic and Gaudiya Math PDFs in the `data/books` directory. You can organize them in subdirectories if desired (e.g., by text, author, or tradition).
-
-### Step 6: Load Documents into the System
-
-```bash
 python app.py load
-```
+Este comando processará os PDFs, dividirá o texto em chunks e os adicionará ao banco de dados vetorial ChromaDB.
 
-## Usage Guide
+Guia de Uso
+Interface de Linha de Comando
+O sistema fornece uma interface de linha de comando abrangente (app.py):
 
-### Command Line Interface
+Comandos Básicos
+Bash
 
-The system provides a comprehensive command-line interface:
-
-#### Basic Commands
-
-```bash
-# Get help
+# Obter ajuda
 python app.py -h
 
-# Get information about database
+# Obter informações sobre o banco de dados
 python app.py info
-```
+Consultando Conhecimento
+Bash
 
-#### Querying Knowledge
+# Fazer uma pergunta (usará a estratégia RAG híbrida por padrão)
+python app.py answer "Qual o significado de dharma no Bhagavad Gita?"
 
-```bash
-# Ask a question
-python app.py answer "What is the meaning of dharma in Bhagavad Gita?"
+# Fazer uma pergunta e exportar o resultado
+python app.py answer "Qual o significado de dharma no Bhagavad Gita?" --export
 
-# Ask and export the result
-python app.py answer "What is the meaning of dharma in Bhagavad Gita?" --export
-
-# Explain a Sanskrit term
+# Explicar um termo em sânscrito
 python app.py explain-term "atma"
 
-# Explain a verse
+# Explicar um verso
 python app.py explain-verse "karmanye vadhikaraste ma phaleshu kadachana"
 
-# Explain with reference
+# Explicar com referência
 python app.py explain-verse "karmanye vadhikaraste ma phaleshu kadachana" --reference "Bhagavad Gita 2.47"
-```
 
-#### Web Scraping
+# Consultar um termo em sânscrito no Vedabase.io e adicionar à base de conhecimento
+python app.py lookup-term "ahimsa"
+python app.py lookup-term "ahimsa" --export # Também exporta os dados do termo
+Web Scraping
+Bash
 
-```bash
-# Scrape a website
-python app.py scrape "https://www.vedabase.com/en/bg/2/47"
+# Fazer scraping de um site (o sistema decidirá entre scraper estático/dinâmico com base na URL)
+python app.py scrape "[https://www.vedabase.com/en/bg/2/47](https://www.vedabase.com/en/bg/2/47)"
 
-# Scrape a JavaScript-heavy website
-python app.py scrape "https://example.com" --dynamic
+# Forçar a atualização do conteúdo em cache
+python app.py scrape "[https://www.vedabase.com/en/bg/2/47](https://www.vedabase.com/en/bg/2/47)" --bypass-cache
 
-# Force refresh of cached content
-python app.py scrape "https://example.com" --bypass-cache
-
-# Control the scraping scheduler
+# Controlar o agendador de scraping
 python app.py scheduler start
+python app.py scheduler start --immediate # Executa imediatamente e depois agenda
 python app.py scheduler stop
 python app.py scheduler status
-```
+Gerenciamento de Cache
+Bash
 
-#### Cache Management
-
-```bash
-# Show cache statistics
+# Mostrar estatísticas do cache
 python app.py cache stats
 
-# Clear expired cache entries
+# Limpar entradas de cache expiradas
 python app.py cache clear
 
-# Clear all cache entries
+# Limpar todas as entradas de cache
 python app.py cache clear --all
-```
+Funções de Exportação
+Bash
 
-#### Export Functions
-
-```bash
-# Export Sanskrit terms dictionary
+# Exportar dicionário de termos em sânscrito (compilado da base de conhecimento)
 python app.py export terms
 
-# Generate system report
+# Gerar relatório do sistema
 python app.py export report
-```
+Funcionalidades de Capítulo (Novidade)
+Bash
 
-### Interactive Mode
+# Listar todos os textos e capítulos disponíveis na base de conhecimento
+python app.py chapters
 
-The interactive mode provides an easy-to-use interface for exploring the system:
+# Listar capítulos para um texto específico (ex: bhagavad-gita)
+python app.py chapters --text "bhagavad-gita" # O text_id pode ser o nome do arquivo ou título.
 
-```bash
+# Obter conteúdo de um capítulo específico (preview)
+python app.py chapter --text_id "bhagavad-gita" --chapter "2"
+
+# Exportar conteúdo completo de um capítulo específico
+python app.py chapter --text_id "bhagavad-gita" --chapter "2" --export
+Modo Interativo
+O modo interativo fornece uma interface fácil de usar para explorar o sistema:
+
+Bash
+
 python app.py interactive
-```
+Comandos disponíveis no modo interativo:
 
-Available commands in interactive mode:
+ask <pergunta>              - Fazer uma pergunta
+term <termo sânscrito>      - Explicar um termo em sânscrito
+verse <texto do verso>      - Explicar um verso
+lookup <termo>             - Consultar um termo sânscrito no Vedabase
+scrape <url>                - Fazer scraping de um site
+dynamic <url>               - Fazer scraping de um site JS-heavy (geralmente automático)
+cache stats                 - Mostrar estatísticas do cache
+cache clear                 - Limpar entradas de cache expiradas
+export terms                - Exportar dicionário de termos em sânscrito
+export report               - Gerar relatório do sistema
+chapters                    - Listar todos os textos e capítulos disponíveis
+chapters <text_id>          - Listar capítulos para um texto específico
+chapter <text_id> <cap>     - Mostrar preview do conteúdo de um capítulo específico
+export chapter <text_id> <cap> - Exportar conteúdo completo de um capítulo
+info                        - Mostrar informações do banco de dados
+exit                        - Sair do modo interativo
+Servidor de API
+Para acesso programático ou construção de interfaces web, use o servidor de API (api.py):
 
-```
-ask <question>         - Ask a question
-term <sanskrit term>   - Explain a Sanskrit term
-verse <verse text>     - Explain a verse
-scrape <url>           - Scrape a website
-dynamic <url>          - Scrape a JS-heavy website
-cache stats            - Show cache statistics
-cache clear            - Clear expired cache entries
-export terms           - Export Sanskrit terms dictionary
-export report          - Generate system report
-info                   - Show database information
-exit                   - Exit interactive mode
-```
+Bash
 
-Example interactive session:
+# Primeiro, certifique-se que o serviço ChromaDB está rodando (se usar docker-compose)
+# docker-compose up -d chroma
 
-```
-> ask What is the concept of bhakti in Gaudiya Vaishnavism?
-[system provides answer with sources]
+# Depois, inicie o servidor da API da aplicação
+uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+Isso inicia um servidor FastAPI em http://localhost:8000 com documentação interativa (Swagger UI) em http://localhost:8000/docs.
 
-> term atma
-[system explains the Sanskrit term]
+Endpoints da API incluem:
 
-> export terms
-Exported Sanskrit terms dictionary to data/exports/summaries/sanskrit_terms_20250426123456.md
-```
+POST /answer - Responder a uma pergunta.
+POST /explain/term - Explicar um termo em sânscrito.
+POST /explain/verse - Explicar um verso.
+POST /scrape - Fazer scraping de um site.
+GET /database/info - Obter informações do banco de dados.
+GET /system/health - Verificar a saúde do sistema.
+GET /cache/stats - Obter estatísticas do cache web.
+POST /cache/clear - Limpar o cache web.
+POST /chapters/documents - Obter documentos de um capítulo específico.
+POST /chapters/summary - Obter um resumo de um capítulo específico.
+POST /chapters/answer - Responder a uma pergunta baseada em um capítulo específico.
+GET /chapters - Listar capítulos disponíveis.
+Adicionando Conteúdo
+Adicionando PDFs
+Coloque os arquivos PDF no diretório data/books.
+Organize em subdiretórios, se desejar.
+Execute python app.py load para processar e indexar os livros.
+Boas práticas para PDFs:
 
-### API Server
+Use PDFs de alta qualidade com camadas de texto adequadas (não apenas imagens digitalizadas).
+Para textos digitalizados, execute OCR antes de adicionar ao sistema.
+Padronize as convenções de nomenclatura para facilitar a referência.
+Adicionando Fontes Web
+Para adicionar novas fontes para scraping:
 
-For programmatic access or building web interfaces, use the API server:
+Edite src/config.py para adicionar sites confiáveis a TRUSTED_WEBSITES.
+Ajuste SITE_SPECIFIC_SCRAPING_CONFIG em src/config.py se os novos sites precisarem de seletores CSS específicos para extração de conteúdo, título ou metadados.
+Execute python app.py scheduler start --immediate para iniciar o scraping.
+Alternativamente, faça scraping de sites individuais:
 
-```bash
-python api.py
-```
+Bash
 
-This starts a FastAPI server at http://localhost:8000 with interactive documentation at http://localhost:8000/docs.
+python app.py scrape "[https://www.exemplo.com/conteudo-vedico](https://www.exemplo.com/conteudo-vedico)"
+Web Scraping
+O sistema inclui um sistema de web scraping sofisticado com estes recursos:
 
-Example API endpoints:
+Scraping Ético
+Todo o web scraping segue diretrizes éticas rigorosas:
 
-- `POST /answer` - Answer a question
-- `POST /explain/term` - Explain a Sanskrit term
-- `POST /explain/verse` - Explain a verse
-- `POST /scrape` - Scrape a website
-- `GET /database/info` - Get database information
+Respeita as diretivas do robots.txt.
+Implementa limitação de taxa para evitar sobrecarregar os sites.
+Verifica avisos de direitos autorais e termos de serviço.
+Evita áreas sensíveis (páginas de login, seções de administração, etc.).
+Sistema de Cache
+O sistema de cache da web otimiza o desempenho e reduz a carga da rede:
 
-Example request:
+Armazena conteúdo web previamente buscado por domínio.
+Expira automaticamente as entradas de cache após um período configurável.
+Rastreia acertos e erros de cache para monitoramento de desempenho.
+Organiza o conteúdo em cache por domínio para fácil gerenciamento.
+Para visualizar as estatísticas do cache:
 
-```json
-POST /answer
-{
-  "question": "What is the meaning of dharma?",
-  "filters": {"source_text": "Bhagavad Gita"}
-}
-```
+Bash
 
-## Adding Content
-
-### Adding PDFs
-
-1. Place PDF files in the `data/books` directory
-2. Organize in subdirectories if desired
-3. Run `python app.py load` to process and index the books
-
-Best practices for PDFs:
-
-- Use high-quality PDFs with proper text layers (not just scanned images)
-- For scanned texts, run OCR before adding to the system
-- Standardize naming conventions for easier reference
-
-### Adding Web Sources
-
-To add new sources for scraping:
-
-1. Edit `src/config.py` to add trusted websites to `TRUSTED_WEBSITES`
-2. Run `python app.py scheduler start --immediate` to start scraping
-
-Alternatively, scrape individual websites:
-
-```bash
-python app.py scrape "https://www.example.com/vedic-content"
-```
-
-## Web Scraping
-
-The system includes a sophisticated web scraping system with these features:
-
-### Ethical Scraping
-
-All web scraping follows strict ethical guidelines:
-
-- Respects robots.txt directives
-- Implements rate limiting to avoid overwhelming websites
-- Checks for copyright notices and terms of service
-- Avoids sensitive areas (login pages, admin sections, etc.)
-
-### Caching System
-
-The web cache system optimizes performance and reduces network load:
-
-- Stores previously fetched web content by domain
-- Automatically expires cache entries after configurable period
-- Tracks cache hits and misses for performance monitoring
-- Organizes cached content by domain for easy management
-
-To view cache statistics:
-
-```bash
 python app.py cache stats
-```
+Manipulação de Sites Dinâmicos
+Para sites pesados em JavaScript que renderizam conteúdo dinamicamente, o sistema utiliza o DynamicVedicScraper (baseado em Selenium e ChromeDriver). A seleção entre scraper estático e dinâmico para a busca de resultados ou conteúdo de artigos é feita com base nas configurações sites_requiring_dynamic_search e sites_requiring_dynamic_article_fetch no VedicRetriever.
 
-### Dynamic Website Handling
+Scraping Agendado
+Para manter sua base de conhecimento atualizada:
 
-For JavaScript-heavy websites that render content dynamically:
+Bash
 
-```bash
-python app.py scrape "https://example.com" --dynamic
-```
-
-This uses a headless browser to properly render the page before processing.
-
-### Scheduled Scraping
-
-To keep your knowledge base up-to-date:
-
-```bash
-# Start scheduled scraping
+# Iniciar scraping agendado
 python app.py scheduler start
 
-# Run immediately and then schedule
+# Executar imediatamente e depois agendar
 python app.py scheduler start --immediate
 
-# Check status
+# Verificar status
 python app.py scheduler status
 
-# Stop scheduling
+# Parar agendamento
 python app.py scheduler stop
-```
+Recursos de Exportação
+O sistema pode exportar vários tipos de dados:
 
-## Export Features
+Logs de Q&A
+Registros de perguntas feitas e respostas fornecidas:
 
-The system can export various types of data:
+Bash
 
-### Q&A Logs
+python app.py answer "O que é dharma?" --export
+Exporta para data/exports/qa_logs/ em formatos JSON e Markdown.
 
-Records of questions asked and answers provided:
+Dicionário de Termos em Sânscrito
+Gere um dicionário abrangente de termos em sânscrito:
 
-```bash
-python app.py answer "What is dharma?" --export
-```
+Bash
 
-Exports to `data/exports/qa_logs/` in both JSON and markdown formats.
-
-### Sanskrit Terms Dictionary
-
-Generate a comprehensive dictionary of Sanskrit terms:
-
-```bash
 python app.py export terms
-```
+Cria um arquivo Markdown pesquisável em data/exports/summaries/ com:
 
-Creates a searchable markdown file in `data/exports/summaries/` with:
-- Devanagari script (if available)
-- Transliteration
-- Definition
-- Etymology
-- Examples
-- Related terms
+Escrita Devanagari (se disponível)
+Transliteração
+Definição
+Etimologia
+Exemplos
+Termos relacionados
+Relatórios do Sistema
+Gere relatórios sobre o status do seu sistema:
 
-### System Reports
+Bash
 
-Generate reports about your system's status:
-
-```bash
 python app.py export report
-```
+Cria relatórios detalhados em data/exports/reports/ incluindo:
 
-Creates detailed reports in `data/exports/reports/` including:
-- Database statistics
-- Cache performance
-- Scraper status
-- System configuration
+Estatísticas do banco de dados
+Desempenho do cache
+Status do scraper
+Configuração do sistema
+Personalização
+Configuração do Banco de Dados Vetorial
+Parâmetros chave no .env (ou src/config.py):
 
-## Customization
+Code snippet
 
-### Vector Database Configuration
-
-Key parameters in `.env`:
-
-```
 # Vector Database
-CHUNK_SIZE=1000         # Size of text chunks
-CHUNK_OVERLAP=200       # Overlap between chunks
-TOP_K_RESULTS=5         # Number of results to retrieve
-```
+CHUNK_SIZE=1000         # Tamanho dos chunks de texto
+CHUNK_OVERLAP=200       # Sobreposição entre chunks
+TOP_K_RESULTS=5         # Número de resultados a serem recuperados
+Para textos sânscritos e védicos:
 
-For Sanskrit and Vedic texts:
-- Consider larger chunk sizes (1000-2000) to preserve context for philosophical concepts
-- Use higher overlap (20-30%) to maintain context for verses and commentaries
-- Adjust TOP_K_RESULTS based on query complexity (3-5 for specific questions, 5-10 for philosophical inquiries)
+Considere tamanhos de chunk maiores (1000-2000) para preservar o contexto para conceitos filosóficos.
+Use maior sobreposição (20-30%) para manter o contexto para versos e comentários.
+Ajuste TOP_K_RESULTS com base na complexidade da consulta (3-5 para perguntas específicas, 5-10 para investigações filosóficas).
+Configuração do LLM
+Code snippet
 
-### LLM Configuration
-
-```
 # LLM Configuration
-MODEL_NAME=gpt-4         # Which OpenAI model to use
-TEMPERATURE=0.2          # Creativity vs. determinism (lower is more deterministic)
-MAX_TOKENS=2048          # Maximum response length
-```
+MODEL_NAME="gemini-1.5-flash" # Qual modelo Gemini usar
+TEMPERATURE=0.2          # Criatividade vs. determinismo (menor é mais determinístico)
+MAX_TOKENS=2048          # Comprimento máximo da resposta
+Templates de Prompt
+Personalize templates de prompt em src/knowledge_base/prompt_templates.py para diferentes tipos de consulta. O sistema já inclui templates para:
 
-### Prompt Templates
+Conhecimento védico geral
+Definições de termos em sânscrito
+Explicações de versos
+Comparações de conceitos
+Informações históricas/biográficas
+Explicações de rituais/práticas
+Modelos de Embedding
+Altere o modelo de embedding em src/config.py ou via variável de ambiente EMBEDDING_MODEL:
 
-Customize prompt templates in `src/knowledge_base/prompt_templates.py` for different query types:
+Python
 
-- General Vedic knowledge
-- Sanskrit term definitions
-- Verse explanations
-- Concept comparisons
-- Historical/biographical information
-- Ritual/practice explanations
-
-### Embedding Models
-
-Change the embedding model in `src/config.py`:
-
-```python
-# Default model
+# src/config.py
+# Modelo padrão
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
-# Alternative models to consider:
-# - "sentence-transformers/multi-qa-mpnet-base-dot-v1" (better for Q&A)
-# - "sentence-transformers/paraphrase-multilingual-mpnet-base-v2" (may handle Sanskrit better)
-```
+# Modelos alternativos a considerar:
+# - "sentence-transformers/multi-qa-mpnet-base-dot-v1" (melhor para Q&A)
+# - "sentence-transformers/paraphrase-multilingual-mpnet-base-v2" (pode lidar melhor com sânscrito)
+Importante: Se você alterar o modelo de embedding após já ter carregado documentos, precisará recarregar todos os documentos para que os embeddings sejam recalculados com o novo modelo.
 
-## Troubleshooting
+Solução de Problemas
+Problemas Comuns
+Problemas de Processamento de PDF
+Sintoma: PDFs falham ao carregar ou têm texto ausente.
+Soluções:
+Certifique-se de que os PDFs sejam baseados em texto, não apenas imagens digitalizadas.
+Execute OCR em PDFs digitalizados primeiro.
+Verifique as permissões do PDF (alguns PDFs são bloqueados).
+Erros do Modelo de Embedding
+Sintoma: "Erro ao inicializar embeddings".
+Soluções:
+Verifique a conexão com a internet (o modelo pode precisar ser baixado).
+Verifique se você tem RAM suficiente (pelo menos 8GB recomendado).
+Tente um modelo de embedding menor em src/config.py.
+Erros da API LLM (Gemini)
+Sintoma: "Erro ao gerar resposta", "Permissão negada", "Modelo não encontrado".
+Soluções:
+Verifique sua GEMINI_API_KEY no .env.
+Verifique se a API "Generative Language" está habilitada no seu projeto Google Cloud.
+Certifique-se de que o MODEL_NAME configurado está disponível para sua chave de API.
+Verifique sua conexão com a internet.
+Problemas de Web Scraping
+Sintoma: "Falha ao fazer scraping da URL".
+Soluções:
+Verifique se o site permite scraping (robots.txt).
+O sistema tenta usar o scraper dinâmico para sites que o exigem; certifique-se de que o ChromeDriver esteja acessível.
+Aumente o REQUEST_DELAY para sites com limitação de taxa.
+Logs
+Logs são armazenados em:
 
-### Common Issues
+vedic_knowledge_ai.log (ou conforme configurado em src/utils/logger.py e src/config.py).
+Para verificar os logs:
 
-#### PDF Processing Issues
+Bash
 
-**Symptom**: PDFs fail to load or have missing text
-**Solutions**:
-- Ensure PDFs are text-based, not just scanned images
-- Run OCR on scanned PDFs first
-- Check PDF permissions (some PDFs are locked)
+tail -f vedic_knowledge_ai.log # ou o nome do arquivo de log configurado
+Recursos Avançados
+Detecção e Processamento de Sânscrito
+O sistema inclui processamento especializado para sânscrito:
 
-#### Embedding Model Errors
+Detecção automática de conteúdo sânscrito (Devanagari e IAST).
+Manipulação de texto em Devanagari e transliterado.
+Extração e definição de termos em sânscrito (usando IndoWordNet se disponível).
+Construção de dicionário de terminologia sânscrita.
+Sincronização com a Nuvem
+Para backup e implantação em vários dispositivos, use a sincronização com a nuvem (src/utils/cloud_sync.py). Suporta AWS S3, Google Cloud Storage e Azure Blob Storage.
+Configure no .env:
 
-**Symptom**: "Error initializing embeddings"
-**Solutions**:
-- Check internet connection
-- Verify you have at least 8GB RAM
-- Try a smaller embedding model in `src/config.py`
+Code snippet
 
-#### LLM API Errors
-
-**Symptom**: "Error generating response"
-**Solutions**: 
-- Check your OpenAI API key in `.env`
-- Verify you have API credits available
-- Check your internet connection
-
-#### Web Scraping Issues
-
-**Symptom**: "Failed to scrape URL"
-**Solutions**:
-- Check if the website allows scraping (robots.txt)
-- Try the dynamic scraper for JavaScript-heavy sites
-- Increase request delay for rate-limited sites
-
-### Logs
-
-Logs are stored in:
-- `vedic_knowledge_ai.log` for the main application
-- `vedic_knowledge_api.log` for the API server
-
-To check logs:
-
-```bash
-tail -f vedic_knowledge_ai.log
-```
-
-## Advanced Features
-
-### Sanskrit Detection and Processing
-
-The system includes specialized processing for Sanskrit:
-
-- Automatic detection of Sanskrit content
-- Devanagari and transliterated text handling
-- Sanskrit term extraction and definition
-- Construction of Sanskrit terminology dictionary
-
-### Cloud Synchronization
-
-For backup and multi-device deployment, use cloud sync:
-
-```python
-from src.utils import CloudSyncManager
-
-# Sync to AWS S3
-sync_manager = CloudSyncManager()
-sync_manager.sync_to_s3()
-
-# Sync to all configured clouds
-sync_manager.sync_to_all()
-```
-
-Configure in `.env`:
-
-```
 # AWS
-AWS_ACCESS_KEY_ID=your_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret_key
-AWS_REGION=us-east-1
-S3_BUCKET=your_bucket_name
+# AWS_ACCESS_KEY_ID=sua_chave_de_acesso_aws
+# AWS_SECRET_ACCESS_KEY=sua_chave_secreta_aws
+# AWS_REGION=us-east-1
+# S3_BUCKET=seu_nome_de_bucket
 
 # GCP
-GCP_PROJECT_ID=your_gcp_project_id
-GCP_BUCKET_NAME=your_gcp_bucket
+# GCP_PROJECT_ID=seu_id_de_projeto_gcp
+# GCP_BUCKET_NAME=seu_nome_de_bucket_gcp
 
 # Azure
-AZURE_STORAGE_CONNECTION_STRING=your_azure_connection_string
-AZURE_CONTAINER_NAME=your_azure_container
-```
+# AZURE_STORAGE_CONNECTION_STRING=sua_string_de_conexao_azure
+# AZURE_CONTAINER_NAME=seu_container_azure
+Dicionário de Termos em Sânscrito Personalizado
+Crie um dicionário semente de termos em sânscrito usando DataExporter.export_sanskrit_terms com seus próprios dados.
 
-### Custom Sanskrit Term Dictionary
+Implantação na Nuvem
+Implantação com Docker
+Construa e execute com Docker:
 
-Create a seed dictionary of Sanskrit terms:
+Bash
 
-```python
-# In Python script or interactive shell
-from src.utils.exporter import DataExporter
+# Construir a imagem Docker para a aplicação
+docker-compose build vedic-knowledge-ai
 
-terms = {
-    "dharma": {
-        "devanagari": "धर्म",
-        "transliteration": "dharma",
-        "definition": "Righteous duty or natural law...",
-        "etymology": "From the Sanskrit root 'dhṛ' meaning 'to hold or maintain'",
-        "examples": ["Bhagavad Gita 1.40", "Bhagavata Purana 1.2.6"],
-        "sources": ["Sanskrit-English Dictionary", "Vedabase.com"],
-        "related_terms": ["adharma", "svadharma"]
-    },
-    # Add more terms...
-}
-
-DataExporter.export_sanskrit_terms(terms)
-```
-
-## Cloud Deployment
-
-### Docker Deployment
-
-Build and run with Docker:
-
-```bash
-# Build the Docker image
-docker build -t vedic-knowledge-ai .
-
-# Run the container
-docker run -p 8000:8000 -v $(pwd)/data:/app/data vedic-knowledge-ai
-```
-
-Or use Docker Compose:
-
-```bash
+# Iniciar a aplicação e o ChromaDB
 docker-compose up -d
-```
+O docker-compose.yml fornecido configura a aplicação vedic-knowledge-ai e um serviço chroma para o ChromaDB, com persistência de dados para o ChromaDB usando um volume Docker.
 
-### Serverless Deployment
+Implantação Serverless (Ex: AWS Lambda)
+Adapte api.py para criar um manipulador Lambda.
+Use Lambda Layers para dependências.
+Configure S3 para armazenamento de PDF.
+Use API Gateway para acesso à API.
+Configuração Multi-Servidor
+Para grandes implantações:
 
-For AWS Lambda:
+Use armazenamento em nuvem compartilhado para dados.
+Implante servidores de API atrás de um balanceador de carga.
+Use servidores separados para web scraping e processamento de documentos.
+Funcionalidades de Capítulo
+O sistema Vedic Knowledge AI agora inclui funcionalidades aprimoradas para trabalhar com capítulos específicos dentro dos textos:
 
-1. Adjust `app.py` to create a Lambda handler
-2. Use Lambda Layers for dependencies
-3. Configure S3 for PDF storage
-4. Use API Gateway for API access
+Listar Capítulos
+Você pode listar todos os capítulos disponíveis na base de conhecimento ou filtrar por um texto específico.
 
-### Multi-Server Setup
+CLI:
 
-For large deployments:
+Bash
 
-1. Use shared cloud storage for data
-2. Deploy API servers behind a load balancer
-3. Use separate servers for web scraping and document processing
-4. Implement authentication for API access
+# Listar todos os capítulos de todos os textos
+python app.py chapters
 
-## Getting Started Tutorial
+# Listar capítulos de um texto específico (e.g., "bhagavad-gita")
+python app.py chapters --text "bhagavad-gita"
+Modo Interativo:
 
-Here's a step-by-step guide to get up and running quickly:
+> chapters
+> chapters bhagavad-gita
+API:
 
-### 1. Initial Setup
+GET /chapters
+Obter Documentos por Capítulo
+Recupere todos os documentos (chunks) pertencentes a um capítulo específico de um livro.
 
-```bash
-# Create project directory
-mkdir vedic-knowledge-ai
-cd vedic-knowledge-ai
+CLI:
 
-# Copy all project files to this directory
-# (Ensure the directory structure matches what's described in this README)
+Bash
 
-# Install dependencies
-pip install -r requirements.txt
+# Obter preview do conteúdo do capítulo 2 do "bhagavad-gita"
+python app.py chapter --text_id "bhagavad-gita" --chapter "2"
 
-# Create .env file
-cp .env.example .env
-# Edit .env to add your OpenAI API key
-```
+# Exportar o conteúdo completo do capítulo
+python app.py chapter --text_id "bhagavad-gita" --chapter "2" --export
+Modo Interativo:
 
-### 2. Initialize the System
+> chapter bhagavad-gita 2
+> export chapter bhagavad-gita 2
+API:
 
-```bash
-# Initialize the system with default directories
-python app.py init
-```
+POST /chapters/documents
+JSON
 
-### 3. Add Sample Content
+{
+  "book": "Bhagavad Gita As It Is", // Opcional, pode ser o título do livro
+  "chapter": 2,
+  "limit": 50 // Opcional
+}
+Resumo do Capítulo
+Gere um resumo para um capítulo específico usando o LLM.
 
-```bash
-# Create a sample directory
-mkdir -p data/books/bhagavad-gita
+API:
 
-# Download a sample PDF (replace with your own PDFs)
-# For example, add Bhagavad Gita with commentaries to data/books/bhagavad-gita/
-```
+POST /chapters/summary
+JSON
 
-### 4. Load Documents
+{
+  "book": "Srimad Bhagavatam", // Opcional
+  "chapter": 3
+}
+(Nota: A funcionalidade de resumo de capítulo via CLI/interativo precisaria ser adicionada a app.py se desejado, utilizando o método ai.retriever.get_chapter_summary.)
 
-```bash
-# Process and index documents
-python app.py load
-```
+Perguntas Baseadas em Capítulos
+Faça perguntas e restrinja a busca de respostas a um capítulo específico.
 
-### 5. Verify Setup
+API:
 
-```bash
-# Check database information
-python app.py info
-```
+POST /chapters/answer
+JSON
 
-You should see something like:
+{
+  "question": "Descreva Arjuna no campo de batalha.",
+  "book": "Bhagavad Gita As It Is", // Opcional
+  "chapter": 1
+}
+(Nota: A funcionalidade de perguntas baseadas em capítulos via CLI/interativo pode ser alcançada usando o comando answer e especificando filtros, embora a API ofereça um endpoint dedicado.)
 
-```
-Database Information:
-Document count: 123
-Collection name: vedic_knowledge
-Directory: ./data/db
-```
+Consulta de Termos em Sânscrito (Vedabase.io)
+O sistema Vedic Knowledge AI inclui uma funcionalidade para consulta direta de termos em sânscrito no Vedabase.io. Isso permite:
 
-### 6. Try a Sample Query
+Buscar termos sânscritos no Vedabase.io.
+Extrair a escrita Devanagari, significado e ocorrências.
+Adicionar as informações à sua base de conhecimento.
+Opcionalmente, exportar os dados para o seu dicionário de termos em sânscrito.
+Uso pela Linha de Comando
+Bash
 
-```bash
-# Ask a basic question
-python app.py answer "What is the meaning of dharma in Bhagavad Gita?"
-```
-
-### 7. Add Web Content
-
-```bash
-# Scrape a Vedic knowledge website
-python app.py scrape "https://www.vedabase.com/en/bg/2/47"
-```
-
-### 8. Start Interactive Mode
-
-```bash
-# Start the interactive interface
-python app.py interactive
-```
-
-### 9. Export a Sanskrit Terms Dictionary
-
-```
-> export terms
-Exported Sanskrit terms dictionary to data/exports/summaries/sanskrit_terms_20250426123456.md
-```
-
-### 10. Generate a System Report
-
-```
-> export report
-Generated system report at data/exports/reports/system_report_20250426123456.md
-```
-
-Congratulations! You now have a fully functional Vedic Knowledge AI system. Continue adding your own PDFs and trusted websites to build a comprehensive knowledge base.
-
-## Sanskrit Term Lookup Feature
-
-The Vedic Knowledge AI system now includes direct Sanskrit term lookup from Vedabase. This feature allows you to:
-
-1. Search for Sanskrit terms on Vedabase.io
-2. Extract the Devanagari script, meaning, and occurrences
-3. Add the information to your knowledge base
-4. Optionally export the data to your Sanskrit terms dictionary
-
-### Command Line Usage
-
-```bash
-# Basic term lookup
+# Consulta básica de termo
 python app.py lookup-term "ahimsa"
 
-# Lookup with fresh data (bypass cache)
+# Consulta com dados atualizados (ignora o cache)
 python app.py lookup-term "ahimsa" --bypass-cache
 
-# Lookup and export to Sanskrit terms dictionary
+# Consulta e exporta para o dicionário de termos em sânscrito
 python app.py lookup-term "ahimsa" --export
-```
+Uso no Modo Interativo
+No modo interativo, use o comando lookup:
 
-### Interactive Mode Usage
-
-In interactive mode, use the `lookup` command:
-
-```
 > lookup ahimsa
-Looking up term: ahimsa...
-
-Term: ahimsa
-Devanagari: अहिंसा
-Definition: nonviolence, not causing pain to any living being
-
-Occurrences (15 found):
-1. SB 1.17.24: ...The personality of religion said: Then, O chaste one, I, who am religion personified, shall tell you in the presence of these great sages about the principles...
-2. SB 11.19.33: ...According to scriptural injunctions, one should perform sacrifices, study the Vedas and practice tolerance, truthfulness, mental and sensory control...
-3. BG 13.8-12: ...Humility; pridelessness; nonviolence; tolerance; simplicity; approaching a bona fide spiritual master; cleanliness; steadiness; self-control...
-...
-```
-
-### How It Works
-
-1. The system searches for the term on Vedabase.io's synonym search
-2. It extracts the Devanagari script and definition
-3. It finds all occurrences in the scriptures
-4. The data is stored in the knowledge base for future queries
-5. Optionally, the information is exported to your Sanskrit terms dictionary
-
-### Advanced Uses
-
-#### Batch Processing Terms
-
-You can process multiple terms with a simple script:
-
-```python
-# terms_to_lookup.py
-from app import VedicKnowledgeAI
-
-terms = [
-    "ahimsa", "dharma", "karma", "yoga", "atma",
-    "brahman", "bhakti", "jnana", "vairagya", "veda"
-]
-
-ai = VedicKnowledgeAI()
-
-for term in terms:
-    print(f"Looking up: {term}")
-    term_data = ai.lookup_sanskrit_term(term)
-    print(f"Found {len(term_data.get('occurrences', []))} occurrences")
-
-# Export all terms at once
-ai.export_sanskrit_terms_dictionary()
-```
-
-#### Integration with QA System
-
-The term lookup data enhances the system's ability to answer Sanskrit-related questions:
-
-```bash
-python app.py answer "What is the definition and significance of ahimsa in Vedic texts?"
-```
-
-The system will now incorporate both LLM knowledge and the specific references and context found through the term lookup feature.
-
-#### Building a Custom Sanskrit Dictionary
-
-To create a comprehensive Sanskrit dictionary:
-
-1. Identify key terms from your texts
-2. Use the lookup-term command with --export for each term
-3. The exported dictionary will build up over time
-4. Access the compiled dictionary in `data/exports/summaries/`
-
-This feature significantly enhances the system's ability to work with Sanskrit terminology by providing authoritative definitions and scriptural references directly from Vedabase.
+Este recurso melhora significativamente a capacidade do sistema de trabalhar com terminologia sânscrita, fornecendo definições autorizadas e referências escriturísticas diretamente do Vedabase.

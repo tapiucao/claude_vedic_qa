@@ -188,7 +188,7 @@ class VedicWebScraper:
                 main_content_element = soup.select_one(selector)
                 if main_content_element:
                     logger.debug(f"Found main content for {url} using selector: '{selector}'") 
-                    logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): Initial main_content_element HTML (BEFORE ANY .decompose() calls):\n{main_content_element.prettify(formatter='html5')}")
+                    # logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): Initial main_content_element HTML (BEFORE ANY .decompose() calls):\n{main_content_element.prettify(formatter='html5')}")
                     break
             
             target_clean_area = main_content_element if main_content_element else soup.body # Fallback to soup.body if no main_content_element
@@ -240,27 +240,6 @@ class VedicWebScraper:
                     
                     text = "\n\n".join(parts).strip() # This is where the NameError occurred
 
-                    if not text.strip(): 
-                        logger.warning(f"Custom assembly for {url} yielded no text. Falling back to get_text on main_content_element.")
-                        # main_content_element here has already had elements removed by combined_remove_selectors earlier
-                        logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): main_content_element HTML (after all .decompose() calls, before .get_text() in fallback):\n{main_content_element.prettify(formatter='html5')}")
-                        extracted_text_attempt = main_content_element.get_text(separator='\n', strip=True)
-                        if not extracted_text_attempt.strip():
-                            logger.warning(f"ARTICLE_CONTENT_DEBUG ({url}): FALLBACK .get_text() on the above HTML resulted in empty or whitespace-only text.")
-                        else:
-                            logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): FALLBACK .get_text() extracted some text (length: {len(extracted_text_attempt)}). Preview: {extracted_text_attempt[:500]}")
-                        text = extracted_text_attempt
-                    else:
-                        logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): Custom assembly successful. Text length: {len(text)}. Preview: {text[:500]}")
-                
-                else: # No custom_content_assembly for this site_config, or main_content_element but no custom_assembly specified
-                    logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): Using standard get_text on main_content_element (custom_assembly was false or not specified). HTML (after all .decompose() calls, before .get_text()):\n{main_content_element.prettify(formatter='html5')}")
-                    text = main_content_element.get_text(separator='\n', strip=True)
-                    if not text.strip():
-                        logger.warning(f"ARTICLE_CONTENT_DEBUG ({url}): STANDARD .get_text() on the above HTML resulted in empty or whitespace-only text.")
-                    else:
-                        logger.info(f"ARTICLE_CONTENT_DEBUG ({url}): STANDARD .get_text() extracted some text (length: {len(text)}). Preview: {text[:500]}")
-            
             elif target_clean_area is soup.body: # Fallback if main_content_element was not found at all
                 logger.warning(f"No main content element for {url}, extracting from full body (after generic removals). This might be noisy.")
                 text = target_clean_area.get_text(separator='\n', strip=True)
@@ -322,8 +301,7 @@ class VedicWebScraper:
 
     # Dentro da classe VedicWebScraper em scraper.py
     def search_purebhakti(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
-        # Esta é a versão ESTÁTICA. A busca real no purebhakti.com é dinâmica e
-        # será feita pelo método sobrescrito na classe DynamicVedicScraper.
+
         base_site_url = "https://www.purebhakti.com/"
         search_path_with_query = f"resources/search?q={quote_plus(query_term)}" # quote_plus de urllib.parse
         search_url = urljoin(base_site_url, search_path_with_query) # urljoin de urllib.parse

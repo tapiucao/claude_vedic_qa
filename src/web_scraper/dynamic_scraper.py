@@ -5,7 +5,8 @@ Uses Selenium to handle JavaScript-rendered content for Vedic Knowledge AI.
 """
 import logging
 import time
-from typing import List, Any, Optional, Tuple
+from typing import List, Any, Optional, Tuple, Dict
+from bs4 import BeautifulSoup 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions 
 from selenium.webdriver.chrome.service import Service as ChromeService 
@@ -389,39 +390,138 @@ class DynamicVedicScraper(VedicWebScraper):
         # Não feche o driver aqui, o VedicRetriever gerenciará
         return html_content, actual_search_url_after_load
 
-    def search_purebhakti(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
-        base_site_url = "https://www.purebhakti.com/"
-        search_path_with_query = f"resources/search?q={quote_plus(query_term)}"
-        search_url = urljoin(base_site_url, search_path_with_query)
+    def _fetch_purebhakti_search_page_html(self, query_term: str, page_number: int = 1) -> Tuple[Optional[str], Optional[str]]:
 
-        logger.info(f"DynamicVedicScraper: Iniciando busca DINÂMICA em purebhakti.com: {search_url}")
+        if page_number > 1:
+            logger.warning(f"Pagination for purebhakti.com search (page {page_number}) is not explicitly handled in the current URL structure. Fetching first page for query: {query_term}")
+            search_url = f"https://www.purebhakti.com/resources/search?q={quote_plus(query_term)}"
+        else:
+            search_url = f"https://www.purebhakti.com/resources/search?q={quote_plus(query_term)}"
+        
+        logger.info(f"DynamicVedicScraper: Initiating dynamic search on purebhakti.com: {search_url}")
 
-        self._initialize_driver() # Garante que o driver está pronto
+        self._initialize_driver() 
         if not self.driver:
-            logger.error("DynamicVedicScraper: Driver não inicializado para busca no purebhakti.com.")
+            logger.error("DynamicVedicScraper: WebDriver not initialized for purebhakti.com search.")
             return None, search_url
 
         html_content = None
-        final_url_of_search_results = search_url
+        actual_search_url_after_load = search_url
         try:
-            # A linha abaixo usa o self.fetch_url DESTA CLASSE (DynamicVedicScraper), que é baseado em Selenium.
-            html_content = self.fetch_url(search_url, bypass_cache=True, wait_time=15, scroll=True) 
-            final_url_of_search_results = self.driver.current_url if self.driver else search_url
+            # Fetch the URL using Selenium
+            html_content = self.fetch_url(search_url, bypass_cache=True, wait_time=20, scroll=True)
+            actual_search_url_after_load = self.driver.current_url if self.driver else search_url
 
             if html_content:
-                # Após fetch_url, aguarda o elemento específico dos resultados
-                results_loaded = self.wait_for_element(selector="search-result-list", by=By.ID, wait_time=20)
+                # Wait for an individual result item to ensure content is loaded
+                results_readiness_selector = "ul#search-result-list li.result__item" 
+                logger.info(f"DynamicVedicScraper: Waiting for elements with selector '{results_readiness_selector}' on purebhakti.com...")
+                results_loaded = self.wait_for_element(selector=results_readiness_selector, by=By.CSS_SELECTOR, wait_time=25)
+                
                 if results_loaded:
-                    logger.info("DynamicVedicScraper: Contêiner 'ul#search-result-list' (purebhakti) encontrado. Obtendo HTML final.")
-                    html_content = self.driver.page_source # Pega o HTML novamente após o elemento aparecer
+                    logger.info(f"DynamicVedicScraper: Elements matching '{results_readiness_selector}' found. Getting final HTML for purebhakti.")
+                    html_content = self.driver.page_source 
                 else:
-                    logger.warning(f"DynamicVedicScraper: Timeout/elemento 'ul#search-result-list' (purebhakti) não encontrado. HTML obtido pode não ter resultados.")
+                    logger.warning(f"DynamicVedicScraper: Readiness selector '{results_readiness_selector}' NOT found on {actual_search_url_after_load} for purebhakti.com.")
+                    if self.driver: # Save debug HTML if results readiness selector not found
+                        failed_html_path = f"purebhakti_DYNAMIC_FAIL_debug_{quote_plus(query_term)}_page{page_number}.html"
+                        try:
+                            with open(failed_html_path, "w", encoding="utf-8") as f_debug:
+                                f_debug.write(self.driver.page_source)
+                            logger.info(f"Saved purebhakti DYNAMIC FAIL debug HTML to '{failed_html_path}'")
+                        except Exception as e_save_debug:
+                            logger.error(f"Error saving purebhakti DYNAMIC FAIL debug HTML: {e_save_debug}")
             else:
-                logger.warning(f"DynamicVedicScraper: fetch_url não retornou HTML para purebhakti.com.")
+                logger.warning(f"DynamicVedicScraper: fetch_url returned no HTML for purebhakti.com search URL {search_url}.")
         except Exception as e:
-            logger.error(f"DynamicVedicScraper: Erro na busca dinâmica em purebhakti.com: {e}", exc_info=True)
+            logger.error(f"DynamicVedicScraper: Error during dynamic fetch for purebhakti.com search: {e}", exc_info=True)
             if self.driver:
                 try: html_content = self.driver.page_source
-                except: pass # Ignora erro se driver já estiver ruim
-        # Não feche o driver aqui, o VedicRetriever gerenciará
-        return html_content, final_url_of_search_results
+                except: pass # Ignore error if driver is already in a bad state
+        return html_content, actual_search_url_after_load
+
+    def scrape_search_results_purebhakti(self, query_term: str, num_articles: int) -> List[Dict[str, str]]:
+        articles_found: List[Dict[str, str]] = []
+        # Assuming purebhakti.com search shows enough results on the first page for `num_articles`
+        # or that pagination needs more specific handling if required.
+        max_search_pages = 1 
+        logger.info(f"Scraping purebhakti.com for '{query_term}', targeting {num_articles} articles across max {max_search_pages} pages.")
+
+        try:
+            for page_num in range(1, max_search_pages + 1):
+                if len(articles_found) >= num_articles:
+                    break
+
+                html_results_page, search_page_url = self._fetch_purebhakti_search_page_html(query_term, page_number=page_num)
+
+                if not html_results_page:
+                    logger.warning(f"Could not retrieve HTML for search results page {page_num} for '{query_term}' from purebhakti.com.")
+                    break 
+                
+                if not search_page_url:
+                    logger.error(f"Search page URL is missing for purebhakti.com query '{query_term}' page {page_num}, cannot resolve relative links.")
+                    break
+
+                soup = BeautifulSoup(html_results_page, 'lxml')
+                
+                # Corrected selector for each search result item based on debug HTML
+                results_items_selector = "ul#search-result-list li.result__item" 
+                results_items = soup.select(results_items_selector)
+                
+                logger.info(f"Purebhakti Page {page_num} for '{query_term}': Found {len(results_items)} item(s) using selector '{results_items_selector}'.")
+
+                if not results_items:
+                    if page_num == 1:
+                        logger.warning(f"No search result items found using '{results_items_selector}' on purebhakti.com for '{query_term}' on the first page.")
+                        # Optional: Save debug HTML if needed
+                        # debug_html_bs_fail_path = f"purebhakti_BS_FAIL_debug_{quote_plus(query_term)}_page{page_num}.html"
+                        # try:
+                        #     with open(debug_html_bs_fail_path, "w", encoding="utf-8") as f_debug_bs:
+                        #         f_debug_bs.write(html_results_page)
+                        #     logger.info(f"Saved purebhakti BeautifulSoup FAIL debug HTML to '{debug_html_bs_fail_path}'")
+                        # except Exception as e_save_bs_debug:
+                        #     logger.error(f"Error saving purebhakti BeautifulSoup FAIL debug HTML: {e_save_bs_debug}")
+                    else:
+                        logger.info(f"No more search results found on page {page_num} for '{query_term}' on purebhakti.com.")
+                    break 
+
+                for item_idx, item in enumerate(results_items):
+                    if len(articles_found) >= num_articles:
+                        break
+                    
+                    # Corrected selector for link and title within each item
+                    link_tag = item.select_one("p.result__title > a.result__title-link") 
+                    
+                    if link_tag and link_tag.has_attr('href'):
+                        href = link_tag['href']
+                        title_text = ""
+                        title_span = link_tag.select_one("span.result__title-text")
+                        if title_span:
+                            title_text = title_span.get_text(strip=True)
+                        else: # Fallback if span isn't there for some reason
+                            title_text = link_tag.get_text(strip=True)
+                        
+                        # Remove leading number like "1. " from title if it exists
+                        if '.' in title_text[:4] and title_text.split('.',1)[0].isdigit():
+                             title = title_text.split('.', 1)[-1].strip()
+                        else:
+                             title = title_text
+
+                        full_url = urljoin(search_page_url, href) 
+                        
+                        articles_found.append({"url": full_url, "title": title})
+                        logger.debug(f"Found purebhakti result #{len(articles_found)}: '{title}' - {full_url}")
+                    else:
+                        logger.warning(f"Purebhakti Item {item_idx+1}/Page {page_num} for '{query_term}': Could not find link/title using 'p.result__title > a.result__title-link'. Item HTML snippet: {str(item)[:250]}")
+                
+                if len(articles_found) >= num_articles:
+                    logger.info(f"Reached target num_articles ({num_articles}) for purebhakti.com.")
+                    # Since purebhakti pagination is not handled, we break after the first page anyway if target met or not.
+                    break 
+            
+            logger.info(f"Finished scraping purebhakti.com for '{query_term}'. Found {len(articles_found)} articles.")
+            return articles_found
+
+        except Exception as e_main:
+            logger.error(f"Critical exception in scrape_search_results_purebhakti for '{query_term}': {e_main}", exc_info=True)
+            return []
