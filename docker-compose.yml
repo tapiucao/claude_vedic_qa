@@ -4,63 +4,57 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000" # Map host port 8000 to container port 8000 (API)
+      - "8000:8000" # Map host port 8000 to container port 8000 (API/App)
     volumes:
-      # Mount data directory for PDFs, cache, exports etc.
       - ./data:/app/data
-      # Mount source code for development (optional, remove for production build)
-      - ./src:/app/src
-      - ./api.py:/app/api.py
-      - ./app.py:/app/app.py
-      - ./src/config.py:/app/src/config.py # Ensure config changes reflect if mounted
+      # Mount source code only if needed for active development inside container
+      # - ./src:/app/src
+      # - ./api.py:/app/api.py # Assuming api.py depends on src
+      # - ./app.py:/app/app.py
+      # - ./src/config.py:/app/src/config.py
     env_file:
       - .env # Load environment variables from .env file
     environment:
-      # Explicitly set Chroma connection details for the app service
-      # The vector_store.py code will pick these up
+      # App connects to Chroma service named 'chroma' on its internal port 8001
       - CHROMA_HOST=chroma
-      - CHROMA_PORT=8001 # Internal port for Chroma server
-      # Ensure Python path includes src if needed, though WORKDIR and COPY should handle it
-      # - PYTHONPATH=/app
+      - CHROMA_PORT=8001
+      - PYTHONPATH=/app # Ensure /app is in pythonpath if src isn't mounted directly
     depends_on:
       chroma:
-        # Wait for the chroma service to be healthy before starting the app
-        condition: service_healthy
+        condition: service_healthy # Waits for Chroma healthcheck to pass
     restart: unless-stopped
-    healthcheck:
-        # Test if the API endpoint '/' is reachable
-        test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-        interval: 30s
-        timeout: 10s
-        retries: 5 # Increased retries
-        start_period: 60s # Increased start period to allow app initialization
+    # Optional healthcheck for the app itself (if it runs a server)
+    # healthcheck:
+    #     test: ["CMD", "curl", "-f", "http://localhost:8000/"] # Adjust port/path if needed
+    #     interval: 30s
+    #     timeout: 10s
+    #     retries: 5
+    #     start_period: 60s
 
   chroma:
     image: chromadb/chroma:latest # Use the official ChromaDB image
     ports:
-      # You can expose Chroma's port externally if needed for direct access/debugging
-      # But it's not required for the app service communication
+      # Expose Chroma's internal port 8001 to host port 8001 (for direct access/debug)
       - "8001:8001"
     volumes:
-      # Use a named volume to persist ChromaDB data across container restarts
+      # Use a named volume managed by Docker for persistence
+      # This is generally preferred over bind mounts for service data
       - chroma_data:/chroma/chroma
     environment:
-      - IS_PERSISTENT=TRUE # Enable persistence within the Chroma container volume
+      - CHROMA_SERVER_HOST=0.0.0.0 # Ensure Chroma listens on all interfaces inside container
+      - CHROMA_SERVER_HTTP_PORT=8001 # Explicitly set port (matches default)
+      - IS_PERSISTENT=TRUE # Enable persistence
       - ANONYMIZED_TELEMETRY=FALSE # Optional: disable telemetry
+      # Add CHROMA_OTEL_COLLECTION_ENDPOINT etc. if using OpenTelemetry
     healthcheck:
         # Check Chroma's heartbeat endpoint
         test: ["CMD", "curl", "-f", "http://localhost:8001/api/v1/heartbeat"]
-        interval: 5s
-        timeout: 3s
-        retries: 10
-        start_period: 10s
+        interval: 10s       # Check less frequently
+        timeout: 5s         # Allow slightly longer timeout
+        retries: 6          # Retries (6 * 10s = 1 minute failure window after start period)
+        start_period: 45s   # Give it 45 seconds to start properly before checks fail critically
     restart: unless-stopped
 
 volumes:
-  # Define the named volume for Chroma persistence
-  chroma_data:
-    driver: local # Use the default local volume driver
-    driver_opts:
-      type: none # Use the host filesystem directly
-      device: ./data/chroma_data # Path to the data directory on the host
-      o: bind # Bind mount option to ensure data is persistent across container restarts
+  # Define the named volume for Chroma persistence (let Docker manage it)
+  chroma_data: {}

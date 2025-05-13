@@ -1,423 +1,465 @@
-"""
-Retrieval system for Vedic Knowledge AI.
-Handles finding relevant documents and context for queries.
-"""
+# src/qa_system/retriever.py
+
 import logging
 import re
-from typing import List, Dict, Any, Optional, Tuple, Union
-from langchain_core.documents import Document
-from ..knowledge_base.vector_store import VedicVectorStore
-from ..knowledge_base.prompt_templates import select_prompt_template
-from ..qa_system.gemini_interface import GeminiLLMInterface
-from ..config import TOP_K_RESULTS
+import os
+from typing import List, Dict, Any, Optional, Sequence, Tuple # Adicionado Tuple
+import concurrent.futures
+from urllib.parse import urlparse, quote_plus # Adicionado quote_plus
 
-# Configure logging
+from langchain_core.documents import Document
+from langchain_core.prompts import PromptTemplate
+
+# Importações relativas para componentes internos
+from ..knowledge_base.vector_store import VedicVectorStore
+from ..knowledge_base.prompt_templates import select_prompt_template, VEDIC_QA_PROMPT
+from .gemini_interface import GeminiLLMInterface
+from ..config import TOP_K_RESULTS, TRUSTED_WEBSITES
+from ..web_scraper.scraper import VedicWebScraper # Scraper base (requests)
+from ..web_scraper.dynamic_scraper import DynamicVedicScraper # Scraper dinâmico (Selenium)
+from ..web_scraper.ethics import is_blacklisted_url, respect_robots_txt
+# from selenium.webdriver.common.by import By # Não é mais necessário aqui, pois é usado dentro dos scrapers
+
 logger = logging.getLogger(__name__)
 
 class VedicRetriever:
-    """Retrieval system for finding relevant Vedic knowledge."""
-    
     def __init__(
         self,
         vector_store: VedicVectorStore,
         llm_interface: GeminiLLMInterface,
-        top_k: int = TOP_K_RESULTS
+        top_k_local: int = TOP_K_RESULTS,
     ):
-        """Initialize the retriever with vector store and LLM interface."""
         self.vector_store = vector_store
         self.llm_interface = llm_interface
-        self.top_k = top_k
+        self.top_k_local = top_k_local
         
-        logger.info(f"Initialized Vedic retriever with top_k={top_k}")
-    
-    def parse_filter_dict(self, filter_dict: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Parse and enhance filter dictionary with chapter detection."""
-        if not filter_dict:
-            return {}
+        logger.info("VedicRetriever: Criando instância do VedicWebScraper (estático).")
+        self.static_web_scraper = VedicWebScraper()
+
+        # Instância para o scraper dinâmico, inicializada quando necessário (lazy loading)
+        self._dynamic_web_scraper_instance: Optional[DynamicVedicScraper] = None
         
+        # Mapeia o nome do método de scraping de resultados de busca.
+        # Estes métodos serão chamados na instância de scraper apropriada (estática ou dinâmica).
+        self.site_search_handlers: Dict[str, str] = {
+            "purebhakti.com": "scrape_search_results_purebhakti", # Deve usar Selenium internamente via DynamicVedicScraper
+            "vedabase.io": "scrape_search_results_vedabase",       # Deve usar Selenium internamente via DynamicVedicScraper
+            "bhaktivedantavediclibrary.org": "scrape_search_results_bhaktivedantavediclibrary_org", # Atualmente estático
+        }
+        # Define quais sites sabidamente requerem scraper dinâmico para sua funcionalidade de BUSCA
+        self.sites_requiring_dynamic_search = ["purebhakti.com", "vedabase.io"]
+        # Define quais sites sabidamente requerem scraper dinâmico para buscar o CONTEÚDO DE ARTIGOS individuais
+        self.sites_requiring_dynamic_article_fetch = ["purebhakti.com", "vedabase.io"]
+
+        logger.info(f"Initialized VedicRetriever with top_k_local={top_k_local}.")
+        logger.debug(f"Trusted websites for hybrid search: {TRUSTED_WEBSITES}")
+        logger.debug(f"Site search handlers: {self.site_search_handlers}")
+        logger.debug(f"Sites requiring dynamic search: {self.sites_requiring_dynamic_search}")
+        logger.debug(f"Sites requiring dynamic article fetch: {self.sites_requiring_dynamic_article_fetch}")
+
+    def _get_dynamic_scraper(self) -> DynamicVedicScraper:
+        """Inicializa e retorna a instância do DynamicVedicScraper de forma preguiçosa."""
+        if self._dynamic_web_scraper_instance is None:
+            logger.info("VedicRetriever: Inicializando instância do DynamicVedicScraper.")
+            cache_dir = self.static_web_scraper.cache_manager.cache_dir
+            request_delay = self.static_web_scraper.request_delay # Dynamic scraper também tem seu próprio request_delay
+            self._dynamic_web_scraper_instance = DynamicVedicScraper(cache_dir=cache_dir, request_delay=request_delay)
+            # O driver do Selenium é inicializado dentro do DynamicVedicScraper quando necessário (ex: no primeiro fetch_url dele)
+        return self._dynamic_web_scraper_instance
+
+    def _shutdown_dynamic_scraper(self):
+        """Fecha o driver do Selenium se a instância do DynamicVedicScraper foi utilizada."""
+        if self._dynamic_web_scraper_instance:
+            logger.info("VedicRetriever: Solicitando fechamento da instância do DynamicVedicScraper.")
+            self._dynamic_web_scraper_instance._close_driver()
+            self._dynamic_web_scraper_instance = None
+
+    def parse_filter_dict(self, filter_dict: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not filter_dict: return None
         enhanced_filter = filter_dict.copy()
-        
-        # Check for chapter references in text format
-        if isinstance(filter_dict.get('chapter_reference'), str):
-            chapter_ref = filter_dict['chapter_reference']
-            
-            # Try to extract chapter numbers from references like "Chapter 2" or "Bhagavad Gita Chapter 2"
-            chapter_match = re.search(r'Chapter\s+(\d+)', chapter_ref)
+        if isinstance(enhanced_filter.get('chapter_reference'), str):
+            chapter_ref_str = enhanced_filter['chapter_reference']
+            chapter_match = re.search(r'(?i)(?:Chapter|Adhyāya|Canto)\s+(\d+)', chapter_ref_str)
             if chapter_match:
-                enhanced_filter['chapter'] = int(chapter_match.group(1))
-            
-            # Try to extract canto numbers
-            canto_match = re.search(r'Canto\s+(\d+)', chapter_ref)
-            if canto_match:
-                enhanced_filter['canto'] = int(canto_match.group(1))
-        
-        # Check for text queries about specific chapters
-        if 'text_query' in filter_dict:
-            text_query = filter_dict['text_query']
-            
-            # Extract chapter numbers from text queries like "tell me about chapter 2"
-            chapter_match = re.search(r'chapter\s+(\d+)', text_query.lower())
-            if chapter_match:
-                enhanced_filter['chapter'] = int(chapter_match.group(1))
-            
-            # Look for book references
-            book_patterns = {
-                'bhagavad gita': 'bhagavad-gita',
-                'bg': 'bhagavad-gita',
-                'srimad bhagavatam': 'bhagavatam',
-                'sb': 'bhagavatam'
-            }
-            
-            for pattern, book in book_patterns.items():
-                if pattern in text_query.lower():
-                    enhanced_filter['title'] = book
-            
-            # Remove the text_query key as it's not used for actual filtering
-            enhanced_filter.pop('text_query', None)
-        
-        return enhanced_filter
-    
-    def retrieve_documents(
+                try:
+                    enhanced_filter['chapter'] = int(chapter_match.group(1))
+                except (ValueError, IndexError):
+                     logger.warning(f"Could not parse chapter number from reference: {chapter_ref_str}")
+        return enhanced_filter if enhanced_filter else None
+
+    def retrieve_documents_from_local_vs(
         self,
         query: str,
         filter_dict: Optional[Dict[str, Any]] = None,
         k: Optional[int] = None
     ) -> List[Document]:
-        """Retrieve relevant documents for a query."""
-        k = k or self.top_k
-        enhanced_filter = self.parse_filter_dict(filter_dict)
-        
+        num_results = k if k is not None and k > 0 else self.top_k_local
+        effective_filter = self.parse_filter_dict(filter_dict)
+        logger.info(f"Retrieving {num_results} documents from local VectorStore for query: '{query}' with filter: {effective_filter}")
         try:
-            docs = self.vector_store.similarity_search(query=query, k=k, filter=enhanced_filter)
-            logger.info(f"Retrieved {len(docs)} documents for query: {query}")
-            logger.debug(f"Filter used: {enhanced_filter}")
+            docs = self.vector_store.similarity_search(query=query, k=num_results, filter=effective_filter)
+            logger.info(f"Retrieved {len(docs)} documents from local VectorStore for query '{query}'.")
             return docs
         except Exception as e:
-            logger.error(f"Error retrieving documents: {str(e)}")
+            logger.error(f"Error retrieving documents from local VectorStore for query '{query}': {e}", exc_info=True)
             return []
-    
-    def retrieve_documents_with_scores(
-        self,
-        query: str,
-        filter_dict: Optional[Dict[str, Any]] = None,
-        k: Optional[int] = None
-    ) -> List[Tuple[Document, float]]:
-        """Retrieve relevant documents with similarity scores."""
-        k = k or self.top_k
-        enhanced_filter = self.parse_filter_dict(filter_dict)
-        
-        try:
-            docs_with_scores = self.vector_store.similarity_search_with_score(query=query, k=k, filter=enhanced_filter)
-            logger.info(f"Retrieved {len(docs_with_scores)} scored documents for query: {query}")
-            return docs_with_scores
-        except Exception as e:
-            logger.error(f"Error retrieving documents with scores: {str(e)}")
-            return []
-    
-    def get_context_for_query(
-        self,
-        query: str,
-        filter_dict: Optional[Dict[str, Any]] = None,
-        k: Optional[int] = None
-    ) -> str:
-        """Get concatenated context from relevant documents."""
-        docs = self.retrieve_documents(query, filter_dict, k)
-        
-        if not docs:
-            return ""
-        
-        # Concatenate document contents with separators
-        context_parts = []
+
+    def _format_document_context_with_citations(self, docs: Sequence[Document], source_type_label: str = "Local Document") -> List[str]:
+        context_parts: List[str] = []
+        if not docs: return context_parts
         for i, doc in enumerate(docs):
-            # Extract source information for citation
-            source = doc.metadata.get("source", "Unknown")
-            page = doc.metadata.get("page", "")
-            doc_type = doc.metadata.get("type", "document")
-            chapter = doc.metadata.get("chapter", "")
-            chapter_ref = doc.metadata.get("chapter_reference", "")
+            metadata = doc.metadata
+            source_name = metadata.get("title") or metadata.get("filename") or os.path.basename(metadata.get("source", f"Unknown Source {i+1}"))
+            page_num = metadata.get("page")
+            verse_ref = metadata.get("verse_reference")
+            chapter_ref = metadata.get("chapter_reference")
+            url = metadata.get("url") 
             
-            # Format citation based on document type and available metadata
-            if chapter:
-                if chapter_ref:
-                    citation = f"[Source {i+1}: {chapter_ref}, page {page}]"
-                else:
-                    citation = f"[Source {i+1}: {source}, Chapter {chapter}, page {page}]"
-            elif doc_type == "website":
-                citation = f"[Source {i+1}: {source}]"
-            elif page:
-                citation = f"[Source {i+1}: {source}, page {page}]"
-            else:
-                citation = f"[Source {i+1}: {source}]"
+            citation_details = [f"{source_type_label} '{source_name}'"]
+            if url and not source_type_label.lower().startswith("summary from"): citation_details.append(f"URL: {url}")
+            if verse_ref: citation_details.append(f"Ref: {verse_ref}")
+            elif chapter_ref: citation_details.append(f"Ref: {chapter_ref}")
+            if page_num: citation_details.append(f"Page: {page_num}")
             
-            # Add document content with citation
-            context_parts.append(f"{doc.page_content}\n{citation}")
+            citation = f"(Source: {', '.join(citation_details)})"
+            content = doc.page_content.strip() if doc.page_content else "[No Content]"
+            context_parts.append(f"{content}\n{citation}")
+        return context_parts
+
+    def _format_summary_context(self, summaries_data: List[Dict[str, Any]]) -> List[str]:
+        context_parts: List[str] = []
+        if not summaries_data: return context_parts
+        for summary_info in summaries_data:
+            title = summary_info.get("title", "Unknown Article")
+            url = summary_info.get("url", "N/A")
+            summary_text = summary_info.get("summary", "[No summary available]")
+            context_parts.append(f"Summary from web article '{title}' (URL: {url}):\n{summary_text}")
+        return context_parts
+
+    def _fetch_and_summarize_one_article(self, article_url: str, user_query: str, article_title: Optional[str]=None) -> Optional[Dict[str, Any]]:
+        if is_blacklisted_url(article_url) or not respect_robots_txt(article_url):
+            logger.info(f"Skipping blacklisted or disallowed URL: {article_url}")
+            return None
+
+        logger.info(f"Fetching full text for article: {article_url} for summarization relevant to '{user_query}'")
         
-        return "\n\n".join(context_parts)
-    
-    def _extract_relevant_content(self, docs: List[Document], query: str) -> str:
-        """Extract the most relevant content from documents as a fallback."""
-        if not docs:
-            return "No relevant information found."
-        
-        # Create a summary from the documents
-        summary_parts = []
-        seen_sources = set()
-        
-        for doc in docs:
-            source = doc.metadata.get("source", "Unknown")
-            page = doc.metadata.get("page", "")
-            chapter = doc.metadata.get("chapter", "")
-            chapter_ref = doc.metadata.get("chapter_reference", "")
-            
-            # Create a unique source identifier
-            if chapter_ref:
-                source_key = f"{chapter_ref}_{page}"
-            else:
-                source_key = f"{source}_{chapter}_{page}"
-            
-            # Avoid duplicate sources
-            if source_key in seen_sources:
-                continue
-            seen_sources.add(source_key)
-            
-            # Add a brief excerpt (first 100-150 chars) from the document
-            content = doc.page_content.strip()
-            if len(content) > 150:
-                content = content[:150] + "..."
-            
-            # Format with source and chapter info
-            if chapter_ref:
-                summary_parts.append(f"From {chapter_ref} (page {page}): {content}")
-            elif chapter:
-                summary_parts.append(f"From {source} (Chapter {chapter}, page {page}): {content}")
-            elif page:
-                summary_parts.append(f"From {source} (page {page}): {content}")
-            else:
-                summary_parts.append(f"From {source}: {content}")
-                
-            # Limit to top 3 sources
-            if len(summary_parts) >= 3:
-                break
-        
-        return "\n\n".join(summary_parts)
-    
-    def answer_query(self, query: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Answer a query using retrieved documents."""
-        # Process any chapter-related filters
-        enhanced_filter = self.parse_filter_dict(filter_dict)
-        
-        # Retrieve documents
-        docs = self.retrieve_documents(query, enhanced_filter)
-        
-        if not docs:
-            return {
-                "answer": "I couldn't find any relevant information to answer your question.",
-                "sources": [],
-                "documents": []
-            }
-        
-        # Prepare context
-        context = self.get_context_for_query(query, enhanced_filter)
-        
-        # Select appropriate prompt template based on query
-        prompt_template = select_prompt_template(query)
-        
-        # Generate answer
-        answer = self.llm_interface.generate_response(
-            query,
-            context=context,
-            system_prompt=prompt_template.template
-        )
-        
-        # Check if there was an error with the LLM
-        if answer.startswith("Error generating response:"):
-            # Fall back to extracting relevant content directly from documents
-            logger.warning(f"LLM error occurred, using fallback mechanism: {answer}")
-            answer = self._create_fallback_answer(query, docs)
-        
-        # Extract source and chapter information
-        sources = []
-        for doc in docs:
-            # Gather metadata for citation
-            chapter = doc.metadata.get("chapter", None)
-            chapter_ref = doc.metadata.get("chapter_reference", None)
-            canto = doc.metadata.get("canto", None)
-            verse = doc.metadata.get("verse", None)
-            
-            source_info = {
-                "source": doc.metadata.get("source", "Unknown"),
-                "page": doc.metadata.get("page", ""),
-                "type": doc.metadata.get("type", "document"),
-                "title": doc.metadata.get("title", "")
-            }
-            
-            # Add chapter information if available
-            if chapter:
-                source_info["chapter"] = chapter
-            if chapter_ref:
-                source_info["chapter_reference"] = chapter_ref
-            if canto:
-                source_info["canto"] = canto
-            if verse:
-                source_info["verse"] = verse
-            
-            sources.append(source_info)
-        
-        result = {
-            "answer": answer,
-            "sources": sources,
-            "documents": docs
-        }
-        
-        return result
-    
-    def _create_fallback_answer(self, query: str, docs: List[Document]) -> str:
-        """Create a fallback answer when LLM fails."""
-        # Extract search terms from query
-        search_terms = query.lower().replace("?", "").replace(".", "").split()
-        search_terms = [term for term in search_terms if len(term) > 3 and term not in ["what", "where", "when", "which", "who", "how", "why", "does", "about", "mean", "meaning"]]
-        
-        fallback_answer = f"I found information related to your query but encountered an issue with the AI model. "
-        
-        # If there are chapter references, mention them
-        chapters_found = set()
-        books_found = set()
-        
-        for doc in docs:
-            if "chapter" in doc.metadata:
-                chapter = doc.metadata.get("chapter")
-                book = doc.metadata.get("title", "unknown").split("-")[0]
-                chapter_ref = f"{book} Chapter {chapter}"
-                chapters_found.add(chapter_ref)
-                books_found.add(book)
-        
-        if chapters_found:
-            fallback_answer += f"The information comes from {', '.join(chapters_found)}. "
-        elif books_found:
-            fallback_answer += f"The information comes from {', '.join(books_found)}. "
-        
-        fallback_answer += "Here's what I can tell you based on the retrieved documents:\n\n"
-        
-        # Check if there are definitions or direct answers in the docs
-        definition_found = False
-        
-        # Look for sentences that contain the search terms
-        for doc in docs:
-            content = doc.page_content.lower()
-            sentences = content.split('.')
-            
-            for sentence in sentences:
-                # Check if sentence contains multiple search terms
-                if all(term in sentence for term in search_terms) or any(term in sentence for term in search_terms):
-                    cleaned = sentence.strip().capitalize()
-                    if cleaned and len(cleaned) > 15:  # Ensure it's a meaningful sentence
-                        fallback_answer += f"• {cleaned}.\n"
-                        definition_found = True
-                        break
-            
-            # Limit to 3 relevant sentences
-            if definition_found and fallback_answer.count("•") >= 3:
-                break
-        
-        # If no clear definition was found, extract relevant passages
-        if not definition_found:
-            fallback_answer += self._extract_relevant_content(docs, query)
-        
-        fallback_answer += "\n\nPlease try your query again later when the AI model is available."
-        
-        return fallback_answer
-    
-    def get_documents_by_chapter(self, chapter: int, book: Optional[str] = None, limit: int = 100) -> List[Document]:
-        """Get documents from a specific chapter of a specific book."""
-        filter_dict = {"chapter": chapter}
-        if book:
-            filter_dict["title"] = book
+        scraper_for_article_fetch = self.static_web_scraper 
+        article_domain = urlparse(article_url).netloc.replace("www.", "")
+        if article_domain in self.sites_requiring_dynamic_article_fetch: # Usa a lista definida no __init__
+            scraper_for_article_fetch = self._get_dynamic_scraper()
+            logger.info(f"Usando DYNAMIC scraper para buscar conteúdo do artigo de {article_domain} para URL: {article_url}")
+        else:
+            logger.info(f"Usando STATIC scraper para buscar conteúdo do artigo de {article_domain} para URL: {article_url}")
+
+        # O método fetch_url será chamado na instância de scraper apropriada
+        article_html = scraper_for_article_fetch.fetch_url(article_url) 
+
+        if not article_html:
+            logger.warning(f"Falha ao buscar HTML para o artigo: {article_url} usando {type(scraper_for_article_fetch).__name__}")
+            return None
+
+        # Para parse_html, você PODE usar o static_web_scraper, pois ele opera sobre a string HTML
+        # A menos que parse_html também precise de estado do driver, o que não é comum.
+        parsed_article = self.static_web_scraper.parse_html(article_html, article_url)
+        if not parsed_article.get("success") or not parsed_article.get("text"):
+            logger.warning(f"Failed to parse or extract text from article: {article_url}")
+            return None
+
+        full_text = parsed_article["text"]
+        title_to_use = article_title or parsed_article.get("title", article_url)
         
         try:
-            docs = self.vector_store.filter_by_metadata(filter_dict, k=limit)
-            logger.info(f"Retrieved {len(docs)} documents from chapter {chapter}")
-            return docs
-        except Exception as e:
-            logger.error(f"Error retrieving documents by chapter: {str(e)}")
-            return []
-    
-    def get_chapter_summary(self, chapter: int, book: Optional[str] = None) -> Dict[str, Any]:
-        """Generate a summary for a specific chapter."""
-        # Get documents from the chapter
-        docs = self.get_documents_by_chapter(chapter, book)
-        
-        if not docs:
-            return {
-                "summary": f"No documents found for chapter {chapter}" + (f" of {book}" if book else ""),
-                "sources": [],
-                "documents": []
-            }
-        
-        # Extract chapter reference if available
-        chapter_ref = None
-        for doc in docs:
-            if "chapter_reference" in doc.metadata:
-                chapter_ref = doc.metadata["chapter_reference"]
-                break
-        
-        # Create context from first few documents
-        context_docs = docs[:min(5, len(docs))]
-        context = "\n\n".join(doc.page_content for doc in context_docs)
-        
-        # Generate summary
-        system_prompt = f"""You are a scholarly expert on Vedic scriptures and Gaudiya Vaishnava texts.
-        Provide a comprehensive summary of {chapter_ref or f'Chapter {chapter}'}.
-        Include:
-        1. The main themes and key teachings
-        2. Important concepts introduced
-        3. Significant verses and their meaning
-        4. The chapter's place in the broader text
-        
-        Base your summary strictly on the context provided, without adding external information.
-        """
-        
-        summary = self.llm_interface.generate_response(
-            query=f"Summarize Chapter {chapter}" + (f" of {book}" if book else ""),
-            context=context,
-            system_prompt=system_prompt
+            safe_title = re.sub(r'[^\w\-. ]', '_', title_to_use).replace(' ', '_')[:100] 
+            debug_text_filename = f"debug_extracted_text_{safe_title}.txt"
+            with open(debug_text_filename, "w", encoding="utf-8") as f_text:
+                f_text.write(full_text)
+            logger.info(f"Texto completo extraído salvo em: {debug_text_filename}")
+        except Exception as e_save:
+            logger.error(f"Não foi possível salvar o arquivo de texto de depuração: {e_save}")
+
+        logger.debug(f"Summarizing article: {title_to_use} (length: {len(full_text)}) for query focus: '{user_query}'")
+        if not hasattr(self.llm_interface, 'summarize_text_for_query'):
+            logger.error("GeminiLLMInterface does not have 'summarize_text_for_query' method.")
+            return {"url": article_url, "title": title_to_use, "summary": "[Summarization unavailable due to missing LLM method]"}
+
+        summary = self.llm_interface.summarize_text_for_query(
+            text_to_summarize=full_text,
+            query_focus=user_query
         )
+
+        logger.info(f"--- DEBUG: Sumário gerado para '{title_to_use}' ---")
         
-        # Check if there was an error with the LLM
-        if summary.startswith("Error generating response:"):
-            # Fall back to basic summary
-            logger.warning(f"LLM error in chapter summary, using fallback mechanism")
-            summary = f"Chapter {chapter}" + (f" of {book}" if book else "") + " contains information about: "
+        is_summary_useful = not (summary.startswith("Error:") or \
+                             "contained little or no specific information" in summary.lower() or \
+                             "does not provide significant details" in summary.lower() or \
+                             "unable to find specific information" in summary.lower() or \
+                             summary.startswith("[Summarization unavailable")) 
+
+        if is_summary_useful:
+            return {"url": article_url, "title": title_to_use, "summary": summary}
+        else:
+            logger.warning(f"Summarization of {article_url} (Title: {title_to_use}) was not useful or failed: {summary}")
+            return {"url": article_url, "title": title_to_use, "summary": "[Summary not relevant or failed]"}
+
+    def _extract_search_term_from_query(self, user_query: str) -> str:
+        """
+        Extrai um termo de busca mais curto de uma user_query mais longa,
+        se a query parecer ser um pedido de definição. Caso contrário, retorna a query original.
+        """
+        extracted_term = None
+        # Padrões da mais específica para a mais geral
+        meaning_query_patterns = [
+            r"what is the meaning of the term\s+['\"]?([\w\s-]+)['\"]?",
+            r"what is the meaning of\s+['\"]?([\w\s-]+)['\"]?",
+            r"define the term\s+['\"]?([\w\s-]+)['\"]?",
+            r"define\s+['\"]?([\w\s-]+)['\"]?",
+        ]
+
+        for pattern in meaning_query_patterns:
+            match = re.search(pattern, user_query, re.IGNORECASE)
+            if match:
+                # Pega o último grupo capturado, que deve ser o termo
+                term_candidate = match.group(match.lastindex).strip()
+                term_candidate = term_candidate.strip("'\"") # Remove aspas
+                # Limita o número de palavras para evitar usar frases longas como termo
+                if 0 < len(term_candidate.split()) <= 3:
+                    extracted_term = term_candidate
+                    logger.info(f"Query sobre significado de termo. Query original: '{user_query}', Termo extraído para busca nos sites: '{extracted_term}'")
+                    return extracted_term
+        
+        logger.info(f"Nenhum termo específico extraído. Usando query original para busca nos sites: '{user_query}'")
+        return user_query # Retorna a query original se nenhum termo for extraído
+
+
+    def _get_web_summaries_for_query(
+        self,
+        user_query: str,
+        num_articles_to_process_per_site: int = 3
+    ) -> List[Dict[str, Any]]:
+        all_summaries_data: List[Dict[str, Any]] = []
+        
+        search_term_for_sites = self._extract_search_term_from_query(user_query)
+
+        tasks_for_executor = []
+
+        for site_url_from_config in TRUSTED_WEBSITES:
+            parsed_site_url = urlparse(site_url_from_config)
+            domain_key = parsed_site_url.netloc.replace("www.", "")
+
+            handler_method_name = self.site_search_handlers.get(domain_key)
+            if not handler_method_name:
+                logger.warning(f"Nenhum handler de busca definido para o domínio: {domain_key}. Pulando.")
+                continue
+
+            scraper_instance_to_use = self.static_web_scraper # Padrão
+            if domain_key in self.sites_requiring_dynamic_search: # Usa a lista definida no __init__
+                scraper_instance_to_use = self._get_dynamic_scraper()
+                logger.info(f"Usando scraper DINÂMICO para busca de resultados em {domain_key}")
+            else:
+                logger.info(f"Usando scraper ESTÁTICO para busca de resultados em {domain_key}")
+
+            if not hasattr(scraper_instance_to_use, handler_method_name): # Verifica na instância correta
+                logger.error(f"Método '{handler_method_name}' não encontrado na instância de {type(scraper_instance_to_use).__name__} para {domain_key}. Pulando.")
+                continue
+
+            search_handler_func = getattr(scraper_instance_to_use, handler_method_name)
+
+            logger.info(f"Preparando busca em '{domain_key}' para o termo: '{search_term_for_sites}' usando {handler_method_name} (scraper: {type(scraper_instance_to_use).__name__})")
+            try:
+                articles_info = search_handler_func(search_term_for_sites, num_articles_to_process_per_site)
+
+                if articles_info is None:
+                    logger.warning(f"Handler de busca para '{domain_key}' retornou None para o termo '{search_term_for_sites}'. Esperava uma lista, tratando como sem resultados.")
+                    articles_info = [] 
+
+                for info in articles_info:
+                    if info.get("url"):
+                        tasks_for_executor.append(
+                            (self._fetch_and_summarize_one_article, info["url"], user_query, info.get("title"))
+                        )
+                    else:
+                        logger.warning(f"Resultado da busca de {domain_key} sem chave 'url': {info.get('title', 'N/A')}")
+            except Exception as e:
+                logger.error(f"Erro durante busca inicial (obtenção de links) no site '{domain_key}': {e}", exc_info=True)
+
+        if tasks_for_executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_task_params = {executor.submit(func, *args): (func, args) for func, *args in tasks_for_executor}
+                for future in concurrent.futures.as_completed(future_to_task_params):
+                    try:
+                        summary_data = future.result()
+                        if summary_data:
+                            all_summaries_data.append(summary_data)
+                    except Exception as e:
+                        task_params = future_to_task_params[future]
+                        logger.error(f"Erro processando futuro de sumário de artigo para tarefa {task_params}: {e}", exc_info=True)
+        
+        useful_summaries = [s for s in all_summaries_data if s.get("summary") and not s["summary"].startswith("[")]
+        logger.info(f"Gerados {len(useful_summaries)} sumários úteis da web para a query '{user_query}'.")
+        return useful_summaries
+
+    def answer_query_hybrid_rag(
+        self,
+        user_query: str,
+        num_web_articles_per_site: int = 2, 
+        num_local_docs: int = TOP_K_RESULTS
+    ) -> Dict[str, Any]:
+        logger.info(f"Starting Hybrid RAG for query: '{user_query}' (Web articles per site: {num_web_articles_per_site}, Local docs: {num_local_docs})")
+        
+        web_summaries_data = []
+        try:
+            web_summaries_data = self._get_web_summaries_for_query(user_query, num_web_articles_per_site)
+        finally:
+            # Garante que o driver do Selenium seja fechado após a busca na web, se foi usado.
+            self._shutdown_dynamic_scraper()
+
+        all_source_details: List[Dict[str, Any]] = []
+        for summary_d in web_summaries_data:
+            all_source_details.append({
+                "type": "web_summary",
+                "title": summary_d.get("title", "N/A"),
+                "url": summary_d.get("url", "N/A"),
+                "summary_content": summary_d.get("summary", "[No summary content]")
+            })
+
+        local_docs = self.retrieve_documents_from_local_vs(user_query, k=num_local_docs)
+        logger.info(f"Retrieved {len(local_docs)} local documents for query '{user_query}'.")
+        for i, doc_content in enumerate(local_docs):
+            logger.debug(f"Local Doc {i+1} Metadata: {doc_content.metadata}") 
+            logger.debug(f"Local Doc {i+1} Content (first 300 chars): {doc_content.page_content[:300]}")
+        
+        for doc in local_docs:
+            source_file = doc.metadata.get("source", "N/A")
+            source_display = os.path.basename(source_file) if os.path.exists(source_file) else source_file
+            all_source_details.append({
+                "type": "local_document_chunk",
+                "source_file": source_display,
+                "title": doc.metadata.get("title", "N/A"), 
+                "page": doc.metadata.get("page", "N/A"),
+                "content_preview": doc.page_content[:150] + "..." 
+            })
+
+        context_parts: List[str] = []
+        if web_summaries_data:
+            useful_web_summaries = [s for s in web_summaries_data if s.get("summary") and not s["summary"].startswith("[")]
+            if useful_web_summaries:
+                context_parts.extend(self._format_summary_context(useful_web_summaries))
+        
+        if local_docs:
+            context_parts.extend(self._format_document_context_with_citations(local_docs, source_type_label="Excerpt from Local Document"))
+
+        rag_answer_text = ""
+        llm_fallback_used = False
+        rag_sources = all_source_details 
+
+        if not context_parts:
+            logger.warning(f"No context generated from web or local search for query: '{user_query}'. Attempting direct LLM query.")
+            rag_answer_text = "No information found in RAG context." 
+        else:
+            final_context = "\n\n---\n\n".join(context_parts)
+            system_instruction_rag = f"""You are a Vedic scholar and AI assistant.
+                                        Your task is to answer the user's question: '{user_query}'
+                                        You MUST base your answer *exclusively* on the following provided context. The context may include summaries from web articles and excerpts from local documents.
+                                        Directly synthesize the information from the context to answer the question.
+                                        When referencing information from the context:
+                                        - For web summaries, mention the article title and its URL.
+                                        - For local documents, mention the document title or filename and page/reference if available.
+                                        If the provided context does not contain sufficient information to answer the question comprehensively, CLEARLY STATE THIS (e.g., "Based on the provided texts, I cannot answer...", or "The documents do not contain specific information about...").
+                                        Do not use any external knowledge. Do not provide generic statements. Focus *only* on answering the question using the given context.
+                                        Provide a clear, concise, and well-structured answer based *only* on the information given below.
+                                        If you cannot answer, explicitly say so."""
             
-            # Extract main topics
-            topics = set()
-            for doc in docs[:10]:  # Use first 10 documents
-                content = doc.page_content.lower()
-                # Look for key terms in the content
-                for para in content.split('\n\n'):
-                    if len(para.split()) > 5:  # Ensure paragraph has enough words
-                        first_sentence = para.split('.')[0]
-                        if len(first_sentence) > 20:  # Ensure sentence is substantial
-                            topics.add(first_sentence.strip().capitalize())
-            
-            # Add topics to summary
-            for i, topic in enumerate(list(topics)[:10]):  # Limit to 5 topics
-                summary += f"\n• {topic}"
-        
-        # Extract source information
-        sources = []
-        for doc in docs[:10]:  # Limit to first 5 documents
-            source = {
-                "source": doc.metadata.get("source", "Unknown"),
-                "page": doc.metadata.get("page", ""),
-                "chapter": doc.metadata.get("chapter", ""),
-                "chapter_reference": doc.metadata.get("chapter_reference", "")
-            }
-            sources.append(source)
-        
-        result = {
-            "summary": summary,
-            "sources": sources,
-            "documents": docs[:10]  # Limit to first 5 documents
+            try:
+                logger.debug(f"Calling LLM Interface (RAG attempt). User Query: '{user_query}'. Context Length: {len(final_context)}")
+                rag_answer_text = self.llm_interface.generate_response(
+                    prompt=user_query, 
+                    context=final_context,
+                    system_prompt=system_instruction_rag
+                )
+                logger.info(f"RAG LLM response for query '{user_query}' (first 200 chars): {rag_answer_text[:200]}")
+            except Exception as e:
+                logger.error(f"LLM generation failed for hybrid RAG query '{user_query}': {e}", exc_info=True)
+                rag_answer_text = "An error occurred while generating the answer using RAG."
+
+        failure_indicators = [
+            "i am sorry, but", "i cannot answer", "does not contain information",
+            "no information found", "unable to find specific information",
+            "do not contain sufficient information", "documents do not contain specific information",
+            "no information found in rag context"
+        ]
+        rag_failed_to_answer = any(indicator in rag_answer_text.lower() for indicator in failure_indicators) or \
+                               rag_answer_text.startswith("Error:") or \
+                               not rag_answer_text.strip()
+
+        final_answer_to_user = rag_answer_text
+
+        if rag_failed_to_answer:
+            logger.warning(f"RAG system could not answer or provided an insufficient answer for '{user_query}'. Attempting direct LLM query without RAG context.")
+            system_instruction_direct = f"""You are a knowledgeable Gaudiya vaisnava scholar and AI assistant specialized in the Bhaktivinoda Thakur parivara teachings. 
+                                            Answer the following question to the best of your ability based on your general knowledge.
+                                            User's question: '{user_query}'
+                                            Provide a comprehensive and informative answer. If you do not know the answer, simply state that you do not have that information."""
+            try:
+                direct_llm_answer = self.llm_interface.generate_response(
+                    prompt=user_query,
+                    context=None,
+                    system_prompt=system_instruction_direct
+                )
+                logger.info(f"Direct LLM response for query '{user_query}' (first 200 chars): {direct_llm_answer[:200]}")
+                final_answer_to_user = f"[Answer from general knowledge as RAG context was insufficient]:\n{direct_llm_answer}"
+                llm_fallback_used = True
+                rag_sources = [] 
+            except Exception as e:
+                logger.error(f"Direct LLM query also failed for query '{user_query}': {e}", exc_info=True)
+                # final_answer_to_user remains rag_answer_text (which indicated failure)
+
+        return {
+            "answer": final_answer_to_user,
+            "sources": rag_sources,
+            "llm_fallback_used": llm_fallback_used 
         }
+
+    def answer_query_from_local_rag(self, query: str, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        logger.info(f"Answering query '{query}' using ONLY local VectorStore and filter: {filter_dict}")
+        retrieved_docs = self.retrieve_documents_from_local_vs(query, filter_dict)
+        if not retrieved_docs:
+            return {"answer": "I couldn't find specific information in the local knowledge base.", "sources": [], "documents": [], "llm_fallback_used": False}
         
-        return result
+        context = "\n\n---\n\n".join(self._format_document_context_with_citations(retrieved_docs, source_type_label="Local Document"))
+        prompt_template: PromptTemplate = select_prompt_template(query) or VEDIC_QA_PROMPT
+        template_str = prompt_template.template
+        system_prompt_part = template_str.split("Context:", 1)[0].strip()
+        if not system_prompt_part or "{context}" in system_prompt_part or "{question}" in system_prompt_part:
+            system_prompt_part = "You are a knowledgeable scholar of Vedic philosophy. Use the provided context to answer the question."
+
+        answer = self.llm_interface.generate_response(prompt=query, context=context, system_prompt=system_prompt_part)
+        llm_failed = answer.startswith("Error:")
+        
+        sources_metadata = []
+        for doc in retrieved_docs:
+            source_file = doc.metadata.get("source", "N/A")
+            source_display = os.path.basename(source_file) if os.path.exists(source_file) else source_file
+            sources_metadata.append({
+                "source_file": source_display, 
+                "title": doc.metadata.get("title", "N/A"), 
+                "page": doc.metadata.get("page", "N/A"),
+                "url": doc.metadata.get("url") 
+            })
+        return {"answer": answer, "sources": sources_metadata, "documents": [], "llm_fallback_used": llm_failed}
+
+    def _get_dynamic_scraper(self) -> DynamicVedicScraper:
+        """Inicializa e retorna a instância do DynamicVedicScraper de forma preguiçosa."""
+        if self._dynamic_web_scraper_instance is None:
+            logger.info("VedicRetriever: Inicializando instância do DynamicVedicScraper.")
+            # Usa cache_dir e request_delay do static_scraper para consistência
+            cache_dir = self.static_web_scraper.cache_manager.cache_dir 
+            request_delay = self.static_web_scraper.request_delay 
+            self._dynamic_web_scraper_instance = DynamicVedicScraper(cache_dir=cache_dir, request_delay=request_delay)
+        return self._dynamic_web_scraper_instance
+
+    def _shutdown_dynamic_scraper(self):
+        """Fecha o driver do Selenium se a instância do DynamicVedicScraper foi utilizada."""
+        if self._dynamic_web_scraper_instance:
+            logger.info("VedicRetriever: Solicitando fechamento da instância do DynamicVedicScraper.")
+            self._dynamic_web_scraper_instance._close_driver()
+            self._dynamic_web_scraper_instance = None
